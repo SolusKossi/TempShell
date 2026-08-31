@@ -1,58 +1,54 @@
 # Tempshell
 
-Run diagnostic commands on a Windows machine you have no shell on — a test PC, a
-colleague's laptop, a locked-down work machine — by having someone there paste one
-PowerShell snippet into a terminal. After that, an AI (or you) drives it: each
-command runs on the machine and the output comes back, one step at a time, with a
-plain-language note on every action and a human gate in front of anything risky.
+Run commands on a Windows machine you have no shell on, by having someone there
+paste one PowerShell snippet into a terminal. An AI assistant then drives it:
+each command runs on the machine and the output comes back, one step at a time,
+with a plain note on every action and a human gate in front of anything risky.
 
-It is the lightweight cousin of a fleet agent. No install, no MDM, no service to
-package. One paste, and the machine is reachable until the window is closed.
+Good for troubleshooting a test PC, a colleague's laptop, or a locked-down work
+machine, without RDP, an install, or reading commands down the phone.
 
-> **Status: source available, not open source.** Free for any non-commercial use.
-> See [License](#license).
+> Source available, not open source. Free for any non-commercial use. See [License](#license).
 
 <!--
-  A short screen recording belongs here — paste the agent, watch a diagnostic run,
-  approve a risky step, done. It is the single most useful thing on this page.
-  Drop a GIF in docs/ and link it:  ![demo](docs/demo.gif)
+  A short screen recording belongs here. It is the most useful thing on this page.
+  GitHub renders an uploaded .mp4 as a player, so no GIF is needed: drag one into
+  a comment or the README editor and paste the URL it gives you.
 -->
 
-## Why this instead of remote desktop or a script over the phone
+## How you use it
 
-- **You get a shell where you had none.** No RDP, no TeamViewer session to babysit,
-  no reading commands down a phone line for someone to mistype.
-- **Every step says what it is and why.** The page reads as a chain of intentions —
-  "restart the time service, because it is stopped and that blocks enrolment" —
-  not a wall of raw PowerShell. It is a record you can read back afterwards.
-- **Risky actions are held for a human.** Anything that changes the machine —
-  a service restart, a delete, a registry write — is withheld until someone at the
-  keyboard presses **Approve**. Read-only checks just run. Who approved, and when,
-  is recorded on the entry, so a fast yes is provably a human and not a bypass.
-- **It is honest about what it runs.** The agent is a plain script you can read
-  before trusting it. Nothing is fetched from somewhere unseen and executed.
+1. Ask your assistant (Claude Code, or anything that can call an HTTP API) to
+   start a Tempshell session. It creates the session and gives you two four-digit
+   codes.
+2. On the machine you want to reach, open the instance URL, type the **join
+   code**, click **Copy agent**, and paste it into a PowerShell window. It asks
+   for the **arming code**; give it the one the assistant showed you.
+3. That is it. From then on the assistant runs the loop: post a command, it runs
+   on the machine, the output comes back, repeat until the problem is solved. You
+   watch it happen on the page and approve anything risky.
 
-It is deliberately worse than a real fleet agent at the things a fleet agent is for:
-it does not persist across a reboot, there is no fleet-wide view, and it will not run
-where the machine's policy forbids pasting a script into PowerShell. If you have
-outgrown those limits you want an installed agent, not this.
+Nobody types commands by hand. The person at the machine pastes once and can walk
+away; you talk to your assistant in plain language.
 
-## How it works
+## What makes it different
 
-1. You create a session and turn on auto-run. The server hands you two four-digit
-   codes: a **join code** and an **arming code**.
-2. The person at the machine opens the site, enters the join code, clicks **Copy
-   agent**, and pastes it into a PowerShell window. It asks for the arming code.
-3. From then on, commands you post run on that machine and the output comes back.
-   The agent draws a small live dashboard; the web page shows the same run log,
-   with the approval buttons and a screenshot upload for GUI problems.
+- **Every step says what it does and why.** The page reads as a chain of intentions,
+  not a wall of PowerShell, and it is a record you can read back afterwards.
+- **Risky actions are held for a human.** Anything that changes the machine, a
+  service restart, a delete, a registry write, waits until someone at the keyboard
+  presses **Approve**. Read-only checks just run. Who approved, and when, is
+  recorded, so a fast yes is provably a human.
+- **You can read what it runs.** The agent is a plain script, not something fetched
+  from elsewhere and executed. Publishing the source is the point.
 
-The whole thing is one small Node process backed by SQLite. It is meant to sit on a
-cheap VPS behind a reverse proxy that terminates TLS.
+It does not persist across a reboot and there is no fleet-wide view. If you need
+those, you want an installed agent, not this. Tempshell is for the one-off: reach
+a machine, fix the thing, done.
 
 ## Self-host
 
-You need Node 24+ (for its built-in SQLite) or Docker, and a domain pointed at the box.
+Node 24+ (for its built-in SQLite) or Docker, plus a domain pointed at the box.
 
 ```bash
 git clone https://github.com/SolusKossi/TempShell.git
@@ -63,33 +59,24 @@ cp .env.example .env
 Fill in `.env`:
 
 ```bash
-# the address the world reaches this instance at (baked into the pasted agent)
-PUBLIC_URL=https://tempshell.example.com
+PUBLIC_URL=https://tempshell.example.com     # where the world reaches it; baked into the agent
 OWNER_PASSWORD_HASH=$(node scripts/hash-password.mjs 'a good password')
 COOKIE_SECRET=$(openssl rand -base64 48)
 API_TOKEN=$(openssl rand -hex 32)
 ```
 
-Run it with Docker (the example `compose.yaml` plus `caddy/Caddyfile` give you TLS):
+Run it with Docker (the example `compose.yaml` and `caddy/Caddyfile` give you TLS):
 
 ```bash
-./scripts/deploy.sh          # local: docker compose up --build
+./scripts/deploy.sh
 ```
 
-or without Docker:
-
-```bash
-npm install && npm run build && npm start
-```
-
-Point `PUBLIC_URL`'s domain at the box, put the `API_TOKEN` where your tooling can
-read it (see the skill below), and open the site.
+or without Docker: `npm install && npm run build && npm start`.
 
 ## Driving it with Claude Code
 
-`skills/tempshell-session/` is the client half: a [Claude Code](https://claude.com/claude-code)
-skill and its helper scripts, so Claude can create a session, hand over the codes,
-run the loop, gate risky commands, and read the results — end to end.
+`skills/tempshell-session/` is a [Claude Code](https://claude.com/claude-code)
+skill plus helper scripts, so Claude can run the whole loop as one instruction.
 
 ```bash
 cp -r skills/tempshell-session ~/.claude/skills/
@@ -97,21 +84,19 @@ echo 'https://tempshell.example.com' > ~/.claude/tempshell-base
 echo '<your API_TOKEN>'              > ~/.claude/tempshell-token
 ```
 
-`SKILL.md` is also the most complete description of the API and its behaviour:
-result semantics, the approval gate, timeouts, truncation, and the Windows traps
-worth knowing before running anything unattended. Nothing about it is Claude-specific
-— it is a plain HTTP API — but the skill is what makes it one instruction instead of
-twenty.
+`SKILL.md` is also the full reference for the API and its behaviour: result
+semantics, the approval gate, timeouts, truncation, and the Windows traps worth
+knowing. The API is plain HTTP, so nothing here is Claude-specific.
 
-## The API, briefly
+## API
 
 Every call is `Authorization: Bearer $API_TOKEN`.
 
 | | |
 |---|---|
-| `POST /api/sessions` | create a session `{title}` → `{slug, code, url}` |
-| `POST /api/sessions/:slug/autorun` | enable auto-run, returns the arming code |
-| `POST /api/sessions/:slug/command` | post a command (text/plain body, no escaping); `?intent=&why=&risk=risky` |
+| `POST /api/sessions` | create a session `{title}` -> `{slug, code, url}` |
+| `POST /api/sessions/:slug/autorun` | returns the arming code |
+| `POST /api/sessions/:slug/command` | post a command (text/plain body); `?intent=&why=&risk=risky` |
 | `GET  /api/sessions/:slug/wait` | long-poll for the next reply |
 | `GET  /api/sessions/:slug/autorun` | live status: connected, busy, awaiting approval |
 | `POST /api/sessions/:slug/complete` | mark the task finished |
@@ -120,10 +105,6 @@ Full detail is in `SKILL.md`.
 
 ## License
 
-Source available, not open source: [PolyForm Noncommercial 1.0.0](LICENSE) with a
-plain-language preamble. Read it, run it, self-host it, modify it for any
-non-commercial purpose. Selling it or running it as a commercial service is not
-permitted; if you want to, ask.
-
-The source is published so the agent you paste into a machine can be read before you
-trust it — which is the whole point of a tool like this.
+Source available under [PolyForm Noncommercial 1.0.0](LICENSE) with a plain-language
+preamble. Read it, run it, self-host it, modify it for any non-commercial purpose.
+Selling it or running it as a commercial service is not permitted; ask if you want to.

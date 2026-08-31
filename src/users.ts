@@ -36,7 +36,7 @@ migrate(db, [
 
 /**
  * The owner is seeded from the environment on first boot, so the password and
- * API token you already use keep working — now as this user's credentials —
+ * API token you already use keep working, now as this user's credentials -
  * and every code path can go through the users table uniformly.
  */
 export const OWNER_ID = 'owner';

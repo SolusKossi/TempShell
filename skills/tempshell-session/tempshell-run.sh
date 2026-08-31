@@ -2,7 +2,7 @@
 #
 # Post one command and block until THIS command's own result comes back, then
 # print that result entry as JSON. One call instead of post + spawn-waiter +
-# read-file, and no LAST_SEQ to get wrong — the command's own seq is the anchor.
+# read-file, and no LAST_SEQ to get wrong, the command's own seq is the anchor.
 #
 # The command is sent as text/plain, so Windows paths and multi-line blocks need
 # NO escaping. Pass the command on stdin (preferred, with printf '%s') or as the
@@ -13,11 +13,11 @@
 #
 # Run it in the BACKGROUND: you are re-invoked when the result lands.
 #
-# It waits for the entry that actually answers this command — an auto-run result,
-# or a human's typed reply on the manual path — and skips anything else posted
+# It waits for the entry that actually answers this command, an auto-run result,
+# or a human's typed reply on the manual path, and skips anything else posted
 # meanwhile (a screenshot, a note, your own posts). So a mid-run screenshot no
 # longer gets mistaken for the command's output. (A manual answer given ONLY as a
-# screenshot, with no text, will not release the wait — read the thread for that.)
+# screenshot, with no text, will not release the wait, read the thread for that.)
 set -euo pipefail
 
 # --help before anything else: requiring the slug first would make `--help` read
@@ -199,7 +199,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     fi
     SINCE="${DECISION#* }"
   else
-    # No node: coarse fallback — take an auto result, else keep waiting.
+    # No node: coarse fallback, take an auto result, else keep waiting.
     if printf '%s' "$R" | grep -q '"author":"auto"'; then printf '%s\n' "$R"; exit 0; fi
   fi
 done
