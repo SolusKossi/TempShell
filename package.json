@@ -1,0 +1,22 @@
+{
+  "name": "tempshell",
+  "version": "1.0.0",
+  "description": "Run diagnostic commands on a Windows machine you have no shell on, through a paste-in PowerShell agent, with an approval gate and an audit log.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch --preserveWatchOutput & node --watch dist/server.js",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

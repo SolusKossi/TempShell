@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+
+# secrets never go in the repo
+.env
+.env.*
+!.env.example
+
+# local sqlite files
+data/
+*.db
+*.db-wal
+*.db-shm

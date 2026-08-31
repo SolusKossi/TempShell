@@ -1,0 +1,14 @@
+# Example reverse proxy. Point your own domain here; Caddy gets the TLS cert.
+# Must match PUBLIC_URL in .env.
+tempshell.example.com {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+	reverse_proxy app:3000 {
+		# Server-sent events must not be buffered.
+		flush_interval -1
+	}
+}
