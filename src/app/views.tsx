@@ -15,7 +15,7 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
 /** The default landing page. Most visits are from a machine that is not yours. */
 export function JoinPage(error?: string) {
   return Layout({
-    title: 'tempshell',
+    title: 'TempShell',
     bare: true,
     script: JOIN_SCRIPT,
     children: html`
@@ -41,7 +41,7 @@ export function JoinPage(error?: string) {
 
 export function LoginPage(error?: string) {
   return Layout({
-    title: 'tempshell',
+    title: 'TempShell',
     bare: true,
     children: html`
       <div class="lead">
@@ -68,7 +68,7 @@ export function LoginPage(error?: string) {
 
 export function HomePage(quick: string, sessions: SessionRow[], isOwnerUser: boolean) {
   return Layout({
-    title: 'tempshell',
+    title: 'TempShell',
     nav: [
       ...(isOwnerUser ? [{ href: '/accounts', label: 'Accounts' }] : []),
       { href: '/join', label: 'Join code' },
@@ -105,13 +105,13 @@ export function AccountsPage(
   error?: string,
 ) {
   return Layout({
-    title: 'accounts - tempshell',
+    title: 'accounts - TempShell',
     where: 'accounts',
     nav: [{ href: '/', label: 'Back' }],
     children: html`
       <div class="section-head"><h2>Accounts</h2><span class="rule"></span></div>
       <p class="small muted" style="margin-top:-4px">
-        Each account has its own tempshell sessions and drops, kept private from the others.
+        Each account has its own TempShell sessions and drops, kept private from the others.
         The gallery is shared.
       </p>
 
@@ -119,7 +119,7 @@ export function AccountsPage(
         ? html`<div class="panel stack" style="border-color:var(--ok)">
             <div><strong>${freshToken.username}</strong> created.</div>
             <div class="small dim">Their API token, shown once. Put it in
-              <code>~/.claude/tempshell-token</code> on their machine so their Claude can drive tempshell.</div>
+              <code>~/.claude/tempshell-token</code> on their machine so their Claude can drive TempShell.</div>
             <pre style="user-select:all">${freshToken.token}</pre>
           </div>`
         : ''}
@@ -185,6 +185,8 @@ export interface SessionView {
   busy: boolean;
   /** The one command the agent has actually claimed, if any. */
   runningSeq?: number | null;
+  /** True when the approval gate is off for this session. */
+  autoApprove?: boolean;
   target: { host: string | null; ps_version: string | null; elevated: boolean } | null;
 }
 
@@ -368,9 +370,12 @@ function setupCardHtml(slug: string): string {
 export function topSection(session: Session, view: SessionView, entries: Entry[] = []): string {
   // Anything waiting on a decision goes first: it is blocking the run.
   const approvals = approvalCards(session, entries);
-  if (view.status === 'arming') return approvals + setupCardHtml(session.slug);
-  if (view.status === 'live') return approvals + statusCard(session, view);
-  return approvals + statusCard(session, view) + setupCardHtml(session.slug);
+  const noGate = view.autoApprove
+    ? `<div class="noapproval">Approvals are off. Risky commands run without asking.</div>`
+    : '';
+  if (view.status === 'arming') return noGate + approvals + setupCardHtml(session.slug);
+  if (view.status === 'live') return noGate + approvals + statusCard(session, view);
+  return noGate + approvals + statusCard(session, view) + setupCardHtml(session.slug);
 }
 
 export function SessionPage(session: Session, entries: Entry[], isOwner: boolean, view: SessionView) {
@@ -398,7 +403,7 @@ export function SessionPage(session: Session, entries: Entry[], isOwner: boolean
     </div>`;
 
   return Layout({
-    title: `${session.title} - tempshell`,
+    title: `${session.title} - TempShell`,
     where: session.title,
     nav,
     script: LIVE_TIME + SESSION_SCRIPT,

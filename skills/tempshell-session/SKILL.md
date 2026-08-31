@@ -1,16 +1,15 @@
 ---
 name: tempshell-session
-description: Run a command-and-response troubleshooting loop with the user against a machine they have no shell on, such as a test PC, a colleague's laptop, or a locked-down work machine. By default a small PowerShell agent on the target runs each command and posts the output back on its own; you block until the reply lands. Manual copy-paste is a fallback the user has to ask for. Works through a self-hosted tempshell instance. Use whenever you need to run diagnostics on a machine that is not the one you are running on, or when the user says "start a tempshell session", "troubleshoot the test PC", or asks you to walk them through fixing something on another computer.
+description: Run a command-and-response troubleshooting loop with the user against a machine they have no shell on, such as a test PC, a colleague's laptop, or a locked-down work machine. A small PowerShell agent on the target runs each command and posts the output back on its own; you block until the reply lands. Works through a self-hosted TempShell instance, driven by any assistant that can call an HTTP API (Claude Code, Codex, and so on). Use whenever you need to run diagnostics on a machine that is not the one you are running on, or when the user says "start a TempShell session", "troubleshoot the test PC", or asks you to walk them through fixing something on another computer.
 ---
 
-# tempshell session
+# TempShell session
 
-A troubleshooting loop over a self-hosted tempshell instance, against a machine you have
+A troubleshooting loop over a self-hosted TempShell instance, against a machine you have
 no shell on.
-**The default is auto-run:** a small PowerShell agent on the target runs each
-command you post and sends the output back by itself, so you are not waiting on a
-human to copy and paste. **Manual copy-paste is a fallback**, used only when the user
-specifically asks, or when the agent cannot run there (see the bottom section). Everything below is written for the auto-run path unless it says otherwise.
+**How it works:** a small PowerShell agent on the target runs each command you post
+and sends the output back by itself, so you are never waiting on a human to copy and
+paste. A session turns this on the moment it is created; everything below assumes it.
 
 ## The default loop (auto-run)
 
@@ -20,7 +19,7 @@ run unattended, and never do anything destructive without asking in chat first.
 
 ### 0. Point at an instance
 
-tempshell is self-hosted, so there is no shared service: **an instance is one person's
+TempShell is self-hosted, so there is no shared service: **an instance is one person's
 box, and an API token only works on the instance it came from.** Read both from
 config rather than assuming, and use them in every example below:
 
@@ -118,6 +117,20 @@ waits, the agent is deliberately idle, **not** stuck. If it is denied you get a 
 with `status:"denied"` and `stderr:"Denied at the machine..."`, so you are never left
 hanging: acknowledge it, don't re-post the same command, and ask what to do instead.
 
+**Turning off approvals (only when the user says so).** For a throwaway or test box
+where the approval step is just friction, the user can have you disable the gate, so
+risky commands run without waiting:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"on": true}' "$BASE/api/sessions/$SLUG/approvals"
+```
+
+Only do this when the user has said it is fine; they are choosing to own the risk.
+It also releases anything already held. Turn it back on with `{"on": false}`. The
+session page shows a clear "Approvals are off" banner the whole time it is off, and
+`GET .../autorun` reports `approvals: "off"`.
+
 ### 5. Post commands, which run on their own
 
 Post as raw text and block for that command's own result. Prefer `tempshell-run.sh`: it
@@ -164,11 +177,8 @@ first you lose the result even though the command ran.
 
 **Keep one command in flight.** `tempshell-run.sh` matches the reply to your command's own
 seq, so a slower earlier command finishing first is never mistaken for your answer.
-Two caveats worth knowing:
+One caveat worth knowing:
 
-- **`tempshell-wait.sh` does NOT match on seq.** It releases on any newer entry, so with
-  two things in flight it will hand you the wrong reply. Only `tempshell-run.sh` correlates
-  by `in_reply_to`. Prefer `tempshell-run.sh`.
 - **The queue is not strictly FIFO.** A command held for approval does not block the
   ones behind it: safe commands overtake it and run while it waits.
 
@@ -267,7 +277,7 @@ that command's error in `stderr`, the same reordering as `Write-Host` in `stdout
   `Get-Item <missing>` gives one record with `category: "ObjectNotFound"`, not just
   terminating ones.
 - **`truncated`** is true when a stream overflowed the 100 000-char cap. Truncation
-  keeps the **head and the tail** (60k + 40k) with a `[tempshell trimmed N chars]` marker
+  keeps the **head and the tail** (60k + 40k) with a `[TempShell trimmed N chars]` marker
   between, since exceptions and summaries land at the end of console output. Still,
   never ask auto-run for an unbounded dump like `Get-ChildItem -Recurse C:\`.
 
@@ -307,11 +317,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST \
 The agent sees the stop on its next poll and exits. Always stop auto-run when you are
 done, so a machine is never left with a live unattended shell.
 
-## Writing commands (applies to both paths)
+## Writing commands
 
-**Assume Windows PowerShell 5.1 and write for it.** Effectively every machine in this
-fleet runs 5.1: Windows Terminal is the host, but the shell inside it is still
-Windows PowerShell. Do not use the PS7 ternary `$x ? 'a': 'b'`, `??`, `?.`, or
+**Assume Windows PowerShell 5.1 and write for it.** Most Windows machines you will
+reach run 5.1 (Windows Terminal may be the host, but the shell inside it is still
+Windows PowerShell). Do not use the PS7 ternary `$x ? 'a': 'b'`, `??`, `?.`, or
 `Get-Error`; they are syntax errors or missing cmdlets on 5.1. Write `if/else` on one
 line: `if ($x) { 'yes' } else { 'no' }`, or `$(if ($x) {'a'} else {'b'})`. Only reach
 for PS7-only syntax after `ps_version` has actually come back as 7.x for that session.
@@ -361,19 +371,28 @@ The result is console text, so shape it before it is printed.
 
 ## Screenshots
 
-Whether auto-run is on or not, anyone in the session can **paste an image straight
-into the session box** with Ctrl+V, or drop a file anywhere on the page. Ask for one whenever the problem is
-a GUI: a dialog, an error toast, a settings pane, a Device Manager tree. Describing
-those back in text loses most of the information.
+When the problem is a GUI, a picture beats a description: a dialog, an error toast, a
+settings pane, a Device Manager tree. The person at the machine can send one at any
+time with the **Add screenshot** button on the session page, or by pasting (Ctrl+V)
+or dropping an image anywhere on it.
 
-An entry with an attachment comes back from `GET /api/sessions/$SLUG` as
-`kind: "file"` with a `file` object. Download it and look at it:
+**Ask for one when you need it.** Post a note describing exactly what to capture; it
+shows up in the log and prompts them to upload:
+
+```bash
+printf '%s' 'Open Device Manager and screenshot the Network adapters section.' \
+  | curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: text/plain' --data-binary @- \
+    "$BASE/api/sessions/$SLUG/command?kind=note&intent=Screenshot%20needed"
+```
+
+The image comes back as an entry with `kind: "file"` and a `file` object. Fetch and
+read it:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -o /tmp/shot.png "$FILE_URL"
 ```
 
-Then read the saved file. The cap is 10 MB per image.
+The cap is 10 MB per image.
 
 ## Who said what
 
@@ -396,51 +415,6 @@ and serial numbers.
   after 60 minutes idle: but do not rely on either. Delete a session when the job is
   done, and `/autorun/stop` when you stop using it.
 
-## Manual copy-paste (fallback: only when asked, or the agent cannot run)
-
-If the user specifically wants to copy-paste, or the agent will not run on that
-machine, drop back to the manual loop. It is the same session and endpoints; the
-difference is that **a human** copies each command and pastes the output back.
-
-**What the target page shows in this mode:** one panel with the command and a big
-**Copy command** button (the command text is collapsed by default, and will usually
-not be opened), a **paste box** underneath that **submits the moment it is pasted
-into** (no button, no Enter), and a collapsed History button. So never put
-instructions in the command body, because they will not be read: say anything that
-needs saying in the Claude Code session instead, and make every command safe to run
-blind.
-
-**Post a command as text/plain, then wait.** `tempshell-run.sh` works here too (it just
-waits for a human paste instead of the agent's post). Or post and wait separately:
-
-```bash
-curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: text/plain' \
-  --data-binary 'Get-ChildItem "C:\Program Files" | Select-Object Name' \
-  "$BASE/api/sessions/$SLUG/command?lang=powershell"
-bash ~/.claude/skills/tempshell-session/tempshell-wait.sh $SLUG $LAST_SEQ
-```
-
-`tempshell-wait.sh` blocks until a reply arrives and prints `{timed_out, seq, entries}`.
-`$LAST_SEQ` is the highest `seq` you have already seen: the seq returned when you
-posted counts as seen, so pass that; `0` the first time. Run the waiter in the
-background; do not poll `/wait` by hand.
-
-**One line per command on the manual path.** A multi-line command pasted into a
-console runs line by line, so a block breaks apart: `if ($x) { 'yes' }` then `else
-{ 'no' }` fails with `The term 'else' is not recognized`. Keep every command to one
-line and chain with `;`:
-
-| Instead of | Use |
-|---|---|
-| multi-line `if/else` | `if ($x) { 'yes' } else { 'no' }` |
-| `foreach (...) { }` | `... \| ForEach-Object { }` on one line |
-| `try/catch` block | `-ErrorAction SilentlyContinue`, or `2>$null` |
-| several statements | join with `;` |
-
-`kind` and `lang` go in the query string (`?kind=note` for something not meant to be
-run). The `command` response includes `autorun`: `manual`, `armed`, or
-`waiting-to-arm`.
-
 ## Other endpoints
 
 | | |
@@ -448,7 +422,7 @@ run). The `command` response includes `autorun`: `manual`, `armed`, or
 | `GET /api/sessions` | All sessions, each with a `pending` count |
 | `GET /api/sessions/$SLUG` | The whole thread (add `?compact=1` to drop duplicated bodies) |
 | `DELETE /api/sessions/$SLUG` | Remove a session and its history |
-| `GET` / `PUT /api/quick` | The quick paste box on the tempshell home page |
+| `GET` / `PUT /api/quick` | The quick paste box on the TempShell home page |
 
 `quick` is right for moving a string between your own devices without a session: a
 path, a connection string, a URL to open on a phone. It syncs live to

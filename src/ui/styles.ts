@@ -213,6 +213,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 .setup { margin-bottom: 16px; }
 
 .feed-wrap { margin-top: 20px; }
+.noapproval { border: 1px solid var(--warn); border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel));
+  color: var(--warn); font-size: 13px; font-weight: 550;
+  padding: 8px 13px; margin-bottom: 12px; }
 .feed-head-row { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
 body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .feed-head { text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; margin-bottom: 8px; }

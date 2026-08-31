@@ -26,6 +26,7 @@ function sessionView(session: store.Session): SessionView {
     status: store.sessionStatus(session),
     busy: store.runningSince(session.id) != null,
     runningSeq: store.runningCommandSeq(session.id),
+    autoApprove: store.autoApproveOn(session.id),
     target: ex?.host ? { host: ex.host, ps_version: ex.ps_version, elevated: Boolean(ex.elevated) } : null,
   };
 }
@@ -560,6 +561,7 @@ api.get('/sessions/:slug/autorun', (c) => {
     // so a stale last_seen with busy:true is working, not dead.
     busy: runningSince != null,
     running_since: runningSince,
+    approvals: store.autoApproveOn(session.id) ? 'off' : 'on',
     pending_command_seqs: pending,
     // Commands held for a human decision. While one sits here the agent is
     // deliberately idle : it is not stuck.
@@ -588,6 +590,19 @@ api.post('/sessions/:slug/complete', async (c) => {
   const outcome = body?.outcome === 'stopped' ? null : 'done';
   store.setOutcome(session.id, outcome, note);
   return c.json({ ok: true, outcome, note });
+});
+
+// Turn the approval gate off (risky commands run straight away) or back on.
+// { on: true } disables approvals. Anyone in the session could reach this via
+// the API, but it is owner-scoped like the rest of the driving surface.
+api.post('/sessions/:slug/approvals', async (c) => {
+  const session = ownedSession(c, c.get('uid'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const body = await safeJson<{ on?: boolean; required?: boolean }>(c);
+  // Accept either { on } (auto-approve on) or { required } (approvals required).
+  const off = body?.on === true || body?.required === false;
+  store.setAutoApprove(session.id, off);
+  return c.json({ ok: true, approvals: off ? 'off' : 'on' });
 });
 
 api.post('/sessions/:slug/autorun/stop', (c) => {
@@ -736,7 +751,7 @@ function agentScript(base: string, slug: string, title: string): string {
   // the figlet banner's backslashes survive; the PowerShell uses [char] code
   // points instead of backticks, so nothing here needs escaping but ${base},
   // ${slug} and ${title}, which interpolate.
-  return String.raw`# tempshell auto-run agent  (pasted as one script block, so the console buffers the
+  return String.raw`# TempShell auto-run agent  (pasted as one script block, so the console buffers the
 # whole thing and runs it on a single Enter instead of line by line)
 & {
 $ErrorActionPreference = 'Continue'
@@ -802,11 +817,11 @@ $runStart = Get-Date
 # ---- drawing -----------------------------------------------------------------
 function Banner {
   $b = @(
-    ' _                     _        _ _ ',
-    '| |_ ___ _ __  _ __ __| |_  ___| | |',
-    '|  _/ -_) ''  \| ''_ (_-< '' \/ -_) | |',
-    ' \__\___|_|_|_| .__/__/_||_\___|_|_|',
-    '              |_|                   '
+    ' _____               ___ _        _ _ ',
+    '|_   _|__ _ __  _ __/ __| |_  ___| | |',
+    '  | |/ -_) ''  \| ''_ \__ \ '' \/ -_) | |',
+    '  |_|\___|_|_|_| .__/___/_||_\___|_|_|',
+    '               |_|                    '
   )
   $g = @(176, 170, 164, 127, 90)
   for ($i = 0; $i -lt $b.Count; $i++) {

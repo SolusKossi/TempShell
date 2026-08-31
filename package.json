@@ -1,7 +1,7 @@
 {
   "name": "tempshell",
   "version": "1.0.0",
-  "description": "Run diagnostic commands on a Windows machine you have no shell on, through a paste-in PowerShell agent, with an approval gate and an audit log.",
+  "description": "TempShell: run diagnostic commands on a Windows machine you have no shell on, through a paste-in PowerShell agent, with an approval gate and an audit log.",
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {

@@ -26,7 +26,7 @@ fi
 mkdir -p "$REPO"
 changed=0
 
-for f in SKILL.md tempshell-run.sh tempshell-wait.sh tempshell-wait-arm.sh; do
+for f in SKILL.md tempshell-run.sh tempshell-wait-arm.sh; do
   src="$LIVE/$f"
   dst="$REPO/$f"
   if [ ! -f "$src" ]; then

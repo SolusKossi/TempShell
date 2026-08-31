@@ -21,7 +21,7 @@ type LayoutProps = PropsWithChildren<{
   bare?: boolean;
 }>;
 
-export function Layout({ title, brand = 'tempshell', where, nav, script, bare, children }: LayoutProps) {
+export function Layout({ title, brand = 'TempShell', where, nav, script, bare, children }: LayoutProps) {
   return html`<!doctype html>
 <html lang="en">
 <head>

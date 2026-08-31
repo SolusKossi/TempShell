@@ -33,6 +33,8 @@ export interface Session {
   /** 'done' once the task is reported finished; null while still in progress. */
   outcome?: string | null;
   outcome_note?: string | null;
+  /** 1 = risky commands run without waiting for a human. */
+  auto_approve?: number;
 }
 
 export interface Executor {
@@ -256,6 +258,9 @@ migrate(db, [
   ALTER TABLE sessions ADD COLUMN outcome TEXT;
   ALTER TABLE sessions ADD COLUMN outcome_note TEXT;
   `,
+  // Optional per-session switch: when on, risky commands run without waiting
+  // for a human. For a throwaway test box where the approval step is noise.
+  `ALTER TABLE sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0;`,
 ]);
 
 export const filesDir = join(config.dataDir, 'files');
@@ -507,8 +512,12 @@ export function addEntry(
   const declaredRisky = meta.risk === 'risky';
   const detectedRisky = kind === 'command' && looksRisky(body);
   const risk = declaredRisky || detectedRisky ? 'risky' : meta.risk ? 'safe' : null;
-  // Only a risky command waits for a human; everything else has nothing to decide.
-  const approval = risk === 'risky' && kind === 'command' ? 'pending' : null;
+  // A risky command waits for a human, unless this session has approvals off.
+  const autoApprove = Boolean(
+    (db.prepare('SELECT auto_approve FROM sessions WHERE id = ?').get(sessionId) as { auto_approve?: number } | undefined)
+      ?.auto_approve,
+  );
+  const approval = risk === 'risky' && kind === 'command' && !autoApprove ? 'pending' : null;
 
   db.prepare(
     `INSERT INTO entries (session_id, seq, author, kind, body, lang, file_id, created_at,
@@ -821,6 +830,25 @@ export function runningSince(sessionId: string): number | null {
 }
 
 /** Commands held for a human decision, oldest first. */
+/** Turn the approval gate off (risky commands run straight away) or back on. */
+export function setAutoApprove(sessionId: string, on: boolean): void {
+  db.prepare('UPDATE sessions SET auto_approve = ?, updated_at = ? WHERE id = ?').run(on ? 1 : 0, Date.now(), sessionId);
+  if (on) {
+    // Release anything already held, so turning approvals off unblocks the run.
+    db.prepare(
+      `UPDATE entries SET approval = 'approved', decided_at = ?, decided_by = 'auto-approve'
+       WHERE session_id = ? AND kind = 'command' AND approval = 'pending'`,
+    ).run(Date.now(), sessionId);
+  }
+  bus.publish(`session:${sessionId}`);
+  bus.publish('sessions');
+}
+
+export function autoApproveOn(sessionId: string): boolean {
+  const row = db.prepare('SELECT auto_approve FROM sessions WHERE id = ?').get(sessionId) as { auto_approve?: number } | undefined;
+  return Boolean(row?.auto_approve);
+}
+
 export function pendingApprovals(sessionId: string): Entry[] {
   return db
     .prepare(
