@@ -213,6 +213,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .setup { margin-bottom: 16px; }
 
 .feed-wrap { margin-top: 20px; }
+.feed-head-row { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .feed-head { text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; margin-bottom: 8px; }
 .act {
   border: 1px solid var(--border); border-radius: var(--r-sm);

@@ -8,7 +8,6 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   live: 'live',
   arming: 'arming',
   inactive: 'inactive',
-  manual: 'manual',
 };
 
 /* ---------------------------------------------------------------- join --- */
@@ -166,7 +165,7 @@ export function sessionList(sessions: SessionRow[]): string {
   return sessions
     .map(
       (s) => `
-    <div class="session-card${s.status === 'inactive' || s.status === 'manual' ? ' dim' : ''}">
+    <div class="session-card${s.status === 'inactive' ? ' dim' : ''}">
       <span class="dot dot-${s.status}" title="${STATUS_LABEL[s.status]}"></span>
       <div class="grow">
         <div class="title"><a href="/s/${esc(s.slug)}">${esc(s.title)}</a></div>
@@ -180,19 +179,6 @@ export function sessionList(sessions: SessionRow[]): string {
 }
 
 /* ------------------------------------------------------------- session --- */
-
-/**
- * The command still waiting for an answer, or null. Walks backwards: a reply
- * from a human closes the last command, but a note from Claude does not.
- */
-function currentCommand(entries: Entry[]): Entry | null {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]!;
-    if (e.author !== 'claude') return null;
-    if (e.kind === 'command') return e;
-  }
-  return null;
-}
 
 export interface SessionView {
   status: SessionStatus;
@@ -396,40 +382,26 @@ export function SessionPage(session: Session, entries: Entry[], isOwner: boolean
       ]
     : [{ href: '/join', label: 'Leave' }];
 
-  // Manual sessions keep the copy-command / paste-back loop; auto sessions get a
-  // status line plus a read-only activity log, and the setup card only while
-  // there is no agent connected (arming or disconnected).
-  const body =
-    st === 'manual'
-      ? html`
-          <div id="run">${raw(runPanel(entries))}</div>
-          <div class="panel" style="margin-top:14px">
-            <textarea id="reply" rows="3" spellcheck="false"
-              placeholder="Paste the output here. It sends the moment you paste."></textarea>
-            <div class="row" style="margin-top:11px">
-              <button class="primary" type="button" id="send">Send</button>
-              <span class="small muted">sends automatically on paste</span>
-              <span class="grow"></span>
-              <span class="toast" id="sentTag">sent</span>
-            </div>
-          </div>
-          <div style="margin-top:22px">
-            <button type="button" class="ghost sm history-toggle" id="histBtn"
-                    data-target="hist">${raw(historyLabel(entries))} <span class="caret"></span></button>
-            <div class="disclosure" id="hist"><div id="thread">${raw(threadHtml(entries))}</div></div>
-          </div>`
-      : html`
-          <div id="topsection">${raw(topSection(session, view, entries))}</div>
-          <div class="feed-wrap">
-            <div class="feed-head small dim">What Claude has done</div>
-            <div id="activity">${raw(activityFeed(entries, view))}</div>
-          </div>`;
+  // Auto-run is the only mode now: a status line, a read-only activity log, and
+  // the setup card only while no agent is connected. Screenshots go in through the
+  // button (or a paste / drop anywhere on the page).
+  const body = html`
+    <div id="topsection">${raw(topSection(session, view, entries))}</div>
+    <div class="feed-wrap">
+      <div class="feed-head-row">
+        <span class="feed-head small dim">What Claude has done</span>
+        <span class="grow"></span>
+        <button type="button" class="sm ghost" id="addShot" title="Share a screenshot of a dialog or error">Add screenshot</button>
+        <input type="file" id="shotInput" accept="image/*" hidden>
+      </div>
+      <div id="activity">${raw(activityFeed(entries, view))}</div>
+    </div>`;
 
   return Layout({
     title: `${session.title} - tempshell`,
     where: session.title,
     nav,
-    script: AUTOGROW + LIVE_TIME + SESSION_SCRIPT,
+    script: LIVE_TIME + SESSION_SCRIPT,
     children: html`
       ${body}
       ${isOwner
@@ -439,58 +411,6 @@ export function SessionPage(session: Session, entries: Entry[], isOwner: boolean
         : ''}
     `,
   });
-}
-
-export function historyLabel(entries: Entry[]): string {
-  return entries.length === 0 ? 'History' : `History (${entries.length})`;
-}
-
-/** Copy button front and centre; the command text is collapsed behind a toggle. */
-export function runPanel(entries: Entry[]): string {
-  const cmd = currentCommand(entries);
-  if (!cmd) {
-    return `<div class="run idle"><div class="waiting"><span class="pulse"></span>
-      Waiting for the next command</div></div>`;
-  }
-  return `<div class="run">
-    <div class="run-head">
-      <span class="chip claude">Claude</span>
-      <span class="what">Run this</span>
-      <span class="grow"></span>
-      <span class="when muted small" data-ts="${cmd.created_at}">${esc(timeAgo(cmd.created_at))}</span>
-    </div>
-    <div class="run-actions">
-      <button type="button" class="primary btn-copy copy" data-seq="${cmd.seq}">Copy command</button>
-      <button type="button" class="sm toggle" data-target="cmd-${cmd.seq}">Show <span class="caret"></span></button>
-    </div>
-    <div class="disclosure" id="cmd-${cmd.seq}"><pre id="body-${cmd.seq}">${esc(cmd.body)}</pre></div>
-  </div>`;
-}
-
-export function threadHtml(entries: Entry[]): string {
-  if (entries.length === 0) {
-    return '<div class="empty">Nothing here yet.</div>';
-  }
-  return entries
-    .map((e) => {
-      const label = AUTHOR_LABEL[e.author] ?? e.author;
-      const isFile = e.kind === 'file' && e.file_id;
-      const copy =
-        e.kind !== 'note' && !isFile
-          ? `<div class="tools"><button type="button" class="sm copy" data-seq="${e.seq}">Copy</button></div>`
-          : '';
-      const body = isFile ? attachmentHtml(e) : `<pre id="body-${e.seq}">${esc(e.body)}</pre>`;
-      return `
-    <div class="entry ${esc(e.kind)}">
-      <div class="entry-head">
-        <span class="chip ${esc(e.author)}">${esc(label)}</span>
-        <span class="when" data-ts="${e.created_at}">${esc(timeAgo(e.created_at))}</span>
-        ${copy}
-      </div>
-      ${body}
-    </div>`;
-    })
-    .join('');
 }
 
 function attachmentHtml(e: Entry): string {
@@ -565,14 +485,25 @@ setInterval(refreshSessions, 30000);
 `;
 
 const SESSION_SCRIPT = `
-const reply = document.getElementById('reply');
-const sentTag = document.getElementById('sentTag');
-const sendBtn = document.getElementById('send');
-const fit = reply ? autogrow(reply) : null;
-
 function flash(el) { if (!el) return; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 1600); }
 
-// Delegated so it survives HTML swaps: copy-command, disclosure toggles, copy-agent.
+// Send an image to the session. Used by the button, by paste, and by drop.
+async function uploadFile(file) {
+  if (!file) return;
+  const btn = document.getElementById('addShot');
+  const was = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name || 'screenshot.png');
+    const r = await fetch(location.pathname + '/upload', { method: 'POST', body: fd });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); alert('Upload failed: ' + (e.error || r.status)); }
+    else { await refresh(); }
+  } finally { if (btn) { btn.disabled = false; btn.textContent = was; } }
+}
+
+// Delegated so it survives HTML swaps: copy a command, expand a card, copy the
+// agent, open the file picker.
 document.addEventListener('click', async (ev) => {
   const copy = ev.target.closest('button.copy');
   if (copy) {
@@ -581,16 +512,11 @@ document.addEventListener('click', async (ev) => {
     try { await navigator.clipboard.writeText(pre.textContent); } catch (e) { return; }
     const label = copy.textContent; copy.textContent = 'Copied';
     setTimeout(() => { copy.textContent = label; }, 1300);
-    if (reply) reply.focus();
     return;
   }
+  if (ev.target.closest('#addShot')) { const i = document.getElementById('shotInput'); if (i) i.click(); return; }
   const card = ev.target.closest('.act.expandable');
-  if (card && !ev.target.closest('a, button, pre')) {
-    card.classList.toggle('open');
-    return;
-  }
-  const tog = ev.target.closest('button.toggle, button.history-toggle');
-  if (tog) { document.getElementById(tog.dataset.target).classList.toggle('open'); tog.classList.toggle('toggled'); }
+  if (card && !ev.target.closest('a, button, pre')) { card.classList.toggle('open'); return; }
   const agent = ev.target.closest('#copyAgent');
   if (agent) {
     try {
@@ -603,51 +529,27 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
-// Manual paste loop, only wired when the paste box exists.
-if (reply) {
-  let sending = false;
-  async function send() {
-    if (sending || !reply.value.trim()) return;
-    sending = true; sendBtn.disabled = true;
-    try {
-      await fetch(location.pathname + '/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: reply.value }) });
-      reply.value = ''; fit(); flash(sentTag); await refresh();
-    } finally { sending = false; sendBtn.disabled = false; }
-  }
-  sendBtn.addEventListener('click', send);
-  reply.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
-  async function upload(file) {
-    if (!file) return; sendBtn.disabled = true; const was = reply.placeholder;
-    reply.placeholder = 'Uploading ' + (file.name || 'image') + '...';
-    try {
-      const fd = new FormData(); fd.append('file', file, file.name || 'pasted.png');
-      const r = await fetch(location.pathname + '/upload', { method: 'POST', body: fd });
-      if (!r.ok) { const e = await r.json().catch(() => ({})); alert('Upload failed: ' + (e.error || r.status)); }
-      else { flash(sentTag); await refresh(); }
-    } finally { reply.placeholder = was; sendBtn.disabled = false; }
-  }
-  reply.addEventListener('paste', (e) => {
-    const items = e.clipboardData ? e.clipboardData.items : null;
-    if (items) { for (const item of items) { if (item.kind === 'file' && item.type.startsWith('image/')) { e.preventDefault(); upload(item.getAsFile()); return; } } }
-    setTimeout(send, 0);
-  });
-  document.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
-  document.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) document.body.classList.remove('dropping'); });
-  document.addEventListener('drop', (e) => { e.preventDefault(); document.body.classList.remove('dropping'); if (e.dataTransfer && e.dataTransfer.files.length) upload(e.dataTransfer.files[0]); });
-}
+const shotInput = document.getElementById('shotInput');
+if (shotInput) shotInput.addEventListener('change', () => { if (shotInput.files[0]) uploadFile(shotInput.files[0]); shotInput.value = ''; });
 
-// Patch the log in place, keyed by seq, instead of replacing the whole list.
-// Replacing it meant every row was destroyed and rebuilt on each poll, so
-// nothing could animate and the list flickered. Now untouched rows are left
-// alone, changed rows are swapped quietly, and only genuinely new rows animate.
+// Paste (Ctrl+V) or drop an image anywhere on the page to share it.
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData ? e.clipboardData.items : null;
+  if (!items) return;
+  for (const it of items) { if (it.kind === 'file' && it.type.startsWith('image/')) { e.preventDefault(); uploadFile(it.getAsFile()); return; } }
+});
+document.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
+document.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) document.body.classList.remove('dropping'); });
+document.addEventListener('drop', (e) => { e.preventDefault(); document.body.classList.remove('dropping'); if (e.dataTransfer && e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]); });
+
+// Patch the log in place, keyed by seq, instead of replacing the whole list, so
+// untouched rows are left alone and only genuinely new rows animate in.
 function patchList(container, html) {
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   const incoming = Array.from(tmp.children);
   const keyed = incoming.filter((n) => n.dataset && n.dataset.seq);
 
-  // The empty state has no key. Treat it as all-or-nothing so it can never be
-  // appended twice, and so it disappears the moment a real row exists.
   if (keyed.length === 0) {
     if (!container.querySelector('.empty')) container.innerHTML = html;
     return;
@@ -681,9 +583,8 @@ function patchList(container, html) {
   existing.forEach((n) => n.remove());
 }
 
-// Update a card in place rather than replacing it: one block per task, whose
-// status changes under you. Replacing the node made a card appear to vanish and
-// be swapped for a different one the instant a fast command finished.
+// Update a card in place rather than replacing it, so a finishing command does
+// not appear to vanish and get swapped for another.
 function updateCard(oldSlot, newSlot) {
   const a = oldSlot.querySelector('.act');
   const b = newSlot.querySelector('.act');
@@ -695,56 +596,41 @@ function updateCard(oldSlot, newSlot) {
     oldStat.className = newStat.className;
     oldStat.textContent = newStat.textContent;
     oldStat.classList.remove('flip');
-    void oldStat.offsetWidth;          // restart the animation
+    void oldStat.offsetWidth;
     oldStat.classList.add('flip');
   }
   const oldDur = a.querySelector('[data-dur]');
   const newDur = b.querySelector('[data-dur]');
   if (oldDur && newDur && oldDur.innerHTML !== newDur.innerHTML) oldDur.innerHTML = newDur.innerHTML;
 
-  // The body (command, and output once it lands) can grow; keep any open state.
   const oldDetail = a.querySelector('.act-detail-inner');
   const newDetail = b.querySelector('.act-detail-inner');
-  if (oldDetail && newDetail && oldDetail.innerHTML !== newDetail.innerHTML) {
-    oldDetail.innerHTML = newDetail.innerHTML;
-  }
+  if (oldDetail && newDetail && oldDetail.innerHTML !== newDetail.innerHTML) oldDetail.innerHTML = newDetail.innerHTML;
+
   const oldIntent = a.querySelector('.act-intent');
   const newIntent = b.querySelector('.act-intent');
-  if (oldIntent && newIntent && oldIntent.textContent !== newIntent.textContent) {
-    oldIntent.textContent = newIntent.textContent;
-  }
+  if (oldIntent && newIntent && oldIntent.textContent !== newIntent.textContent) oldIntent.textContent = newIntent.textContent;
 }
 
-// Live refresh for both modes.
 async function refresh() {
   const activity = document.getElementById('activity');
-  if (activity) {
-    const [a, s] = await Promise.all([
-      fetch(location.pathname + '/activity').then((r) => r.text()),
-      fetch(location.pathname + '/status').then((r) => r.text()),
-    ]);
-    patchList(activity, a);
-    const sc = document.getElementById('topsection');
-    // Only rewrite when the markup actually changed, or the "Task complete" card
-    // re-mounts on every 15s poll and replays its entry animation (the flashing).
-    if (sc && s && sc.dataset.html !== s) {
-      const hadApproval = !!sc.querySelector('.approval');
-      sc.innerHTML = s;
-      sc.dataset.html = s;
-      const ap = sc.querySelector('.approval');
-      if (ap && !hadApproval) ap.classList.add('fresh');
-    }
-    tickTimes();
-    return;
+  if (!activity) return;
+  const [a, s] = await Promise.all([
+    fetch(location.pathname + '/activity').then((r) => r.text()),
+    fetch(location.pathname + '/status').then((r) => r.text()),
+  ]);
+  patchList(activity, a);
+  const sc = document.getElementById('topsection');
+  // Only rewrite when the markup actually changed, or the "Task complete" card
+  // re-mounts on every poll and replays its entry animation.
+  if (sc && s && sc.dataset.html !== s) {
+    const hadApproval = !!sc.querySelector('.approval');
+    sc.innerHTML = s;
+    sc.dataset.html = s;
+    const ap = sc.querySelector('.approval');
+    if (ap && !hadApproval) ap.classList.add('fresh');
   }
-  const run = document.getElementById('run');
-  if (run) {
-    const d = await (await fetch(location.pathname + '/live')).json();
-    run.innerHTML = d.run;
-    const thread = document.getElementById('thread'); if (thread) thread.innerHTML = d.thread;
-    const btn = document.getElementById('histBtn'); if (btn) btn.firstChild.textContent = d.label + ' ';
-    tickTimes();
-  }
+  tickTimes();
 }
 
 document.addEventListener('keydown', (ev) => {
@@ -755,8 +641,7 @@ document.addEventListener('keydown', (ev) => {
 
 new EventSource(location.pathname + '/stream').addEventListener('update', refresh);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-// A quiet session fires no event, so tick on a timer to let the status card
-// fall to "not connected".
+// A quiet session fires no event, so tick on a timer to let the status card fall to "not connected".
 setInterval(refresh, 15000);
 
 const form = document.getElementById('deleteForm');

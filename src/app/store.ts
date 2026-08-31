@@ -279,19 +279,17 @@ export function listSessions(owner: string, includeClosed = false): Session[] {
  * 'arming'   : auto-run on, waiting for the person to paste and arm the agent.
  * 'inactive' : the agent stopped, was disarmed, or its window was closed (its
  *              poll heartbeat went stale). A finished session lands here.
- * 'manual'   : no agent; a plain copy-and-paste session.
  * The live/stale line is the agent's last poll: it polls every couple of
  * seconds, so no poll for LIVE_WINDOW_MS means the window is gone.
  */
-export type SessionStatus = 'live' | 'arming' | 'inactive' | 'manual';
+export type SessionStatus = 'live' | 'arming' | 'inactive';
 const LIVE_WINDOW_MS = 90_000;
 
 export function sessionStatus(s: Session): SessionStatus {
   const ex = getExecutor(s.id);
   if (!s.auto_enabled) {
-    // haltAuto clears auto_enabled, so a stopped auto-run session lands here
-    // with its executor row still present : that is 'inactive', not 'manual'.
-    return ex && ex.stop ? 'inactive' : 'manual';
+    // A session before its first arm, or one whose auto-run was stopped.
+    return ex && ex.stop ? 'inactive' : 'arming';
   }
   if (!ex || !ex.armed) return 'arming';
   if (ex.stop) return 'inactive';
@@ -329,6 +327,9 @@ export function createSession(title: string, owner: string): Session {
   db.prepare(
     'INSERT INTO sessions (id, slug, title, code, created_at, updated_at, closed, owner) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
   ).run(session.id, session.slug, session.title, session.code, now, now, owner);
+  // Auto-run is the only mode, so a session is armed-ready the moment it exists.
+  enableAuto(session.id);
+  session.auto_enabled = 1;
   bus.publish('sessions');
   return session;
 }

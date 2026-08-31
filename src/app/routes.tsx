@@ -17,7 +17,7 @@ import {
 import { apiUserId, currentUserId, isOwner } from '../identity.ts';
 import * as users from '../users.ts';
 import * as store from './store.ts';
-import { AccountsPage, HomePage, JoinPage, LoginPage, SessionPage, type SessionView, activityFeed, historyLabel, runPanel, sessionList, threadHtml, topSection } from './views.tsx';
+import { AccountsPage, HomePage, JoinPage, LoginPage, SessionPage, type SessionView, activityFeed, sessionList, topSection } from './views.tsx';
 
 /** The live status an auto session's page shows: connected?, busy?, what target. */
 function sessionView(session: store.Session): SessionView {
@@ -214,12 +214,6 @@ app.get('/s/:slug', (c) => {
   );
 });
 
-app.get('/s/:slug/thread', (c) => {
-  const session = store.getSession(c.req.param('slug'));
-  if (!session) return c.notFound();
-  if (!canAccess(c, session)) return c.text('', 403);
-  return c.html(threadHtml(store.listEntries(session.id)));
-});
 
 // Read-only activity log for an auto session's page (refreshed live).
 app.get('/s/:slug/activity', (c) => {
@@ -280,27 +274,6 @@ app.post('/s/:slug/autorun-stop', (c) => {
   return c.redirect(`/s/${session.slug}`);
 });
 
-/** Everything the page needs to re-render, so the history stays open if it was. */
-app.get('/s/:slug/live', (c) => {
-  const session = store.getSession(c.req.param('slug'));
-  if (!session) return c.json({ error: 'not found' }, 404);
-  if (!canAccess(c, session)) return c.json({ error: 'unauthorised' }, 403);
-  const entries = store.listEntries(session.id);
-  return c.json({ run: runPanel(entries), thread: threadHtml(entries), label: historyLabel(entries) });
-});
-
-app.post('/s/:slug/reply', async (c) => {
-  const session = store.getSession(c.req.param('slug'));
-  if (!session) return c.notFound();
-  if (!canAccess(c, session)) return c.json({ error: 'unauthorised' }, 403);
-  const { body } = await c.req.json<{ body?: string }>();
-  const text = String(body ?? '');
-  if (!text.trim()) return c.json({ error: 'empty' }, 400);
-  // Signed in is 'admin'; anyone here via a join code is 'guest'.
-  const author = currentUserId(c) === session.owner ? 'admin' : 'guest';
-  const entry = store.addEntry(session.id, author, 'output', text.slice(0, 1_000_000));
-  return c.json({ ok: true, seq: entry.seq });
-});
 
 /** Pasted screenshots. The client sends the clipboard's image as multipart. */
 app.post('/s/:slug/upload', async (c) => {
