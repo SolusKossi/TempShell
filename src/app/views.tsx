@@ -27,7 +27,7 @@ export function JoinPage(error?: string) {
       ${error ? html`<div class="flash error">${error}</div>` : ''}
       <form method="post" action="/join" id="joinForm" class="stack">
         <input type="tel" id="code" name="code" class="code-input" inputmode="numeric"
-               pattern="[0-9]{4}" maxlength="4" autocomplete="off"
+               pattern="[0-9]*" autocomplete="off"
                data-lpignore="true" data-1p-ignore data-form-type="other" autofocus>
         <button class="primary" type="submit" style="width:100%">Join</button>
       </form>
@@ -441,14 +441,21 @@ function formatBytes(n: number): string {
 
 const JOIN_SCRIPT = `
 const code = document.getElementById('code');
-// Auto-submit once four digits are in: proven over many sessions, and a nice touch
-// now that the code box is only a fallback behind the one-tap join link. The
-// input is marked data-lpignore / data-1p-ignore so a password manager does not
-// reach in and wipe it.
-code.addEventListener('input', () => {
-  code.value = code.value.replace(/[^0-9]/g, '').slice(0, 4);
+// The field has NO maxlength on purpose. maxlength truncates a pasted value
+// BEFORE this handler runs, so a code copied with a leading space (" 4101")
+// becomes " 410", loses its last digit here, and silently never reaches four,
+// which is the "I paste it and nothing happens" bug. Instead we take the whole
+// pasted text and keep the digits, so leading/trailing spaces, newlines, even
+// surrounding words all resolve to the four digits and auto-submit.
+function normalize() {
+  const digits = code.value.replace(/[^0-9]/g, '').slice(0, 4);
+  if (digits !== code.value) code.value = digits;
   if (code.value.length === 4) document.getElementById('joinForm').submit();
-});
+}
+code.addEventListener('input', normalize);
+// paste fires before input in some browsers; normalise on the next tick so the
+// pasted text is in the field first.
+code.addEventListener('paste', () => setTimeout(normalize, 0));
 `;
 
 const HOME_SCRIPT = `

@@ -135,7 +135,7 @@ app.get('/j/:code', (c) => {
   if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
     return c.html(JoinPage('Too many attempts. Try again later.'), 429);
   }
-  const session = store.getSessionByCode(String(c.req.param('code')).trim());
+  const session = store.getSessionByCode(String(c.req.param('code')).replace(/\D/g, '').slice(0, 4));
   if (!session) {
     recordWrongGuess();
     return c.html(JoinPage('That code did not match a session.'), 404);
@@ -150,7 +150,9 @@ app.post('/join', async (c) => {
     return c.html(JoinPage('Too many attempts. Try again later.'), 429);
   }
   const form = await c.req.parseBody();
-  const code = String(form.code ?? '').trim();
+  // Strip to digits, not just trim: a pasted code can carry spaces or stray
+  // characters, and the four digits are all that identify the session.
+  const code = String(form.code ?? '').replace(/\D/g, '').slice(0, 4);
   const session = store.getSessionByCode(code);
   if (!session) {
     recordWrongGuess();
