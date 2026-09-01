@@ -33,6 +33,19 @@ function sessionView(session: store.Session): SessionView {
 
 export const app = new Hono();
 
+// Never let a browser cache an HTML page. These are all dynamic (the join box,
+// the session view, the home list) and shipped no cache-control at all, so a
+// browser could keep serving a stale copy after a deploy: paste a code into a
+// page whose JS predates a fix and nothing happens, no matter how many times the
+// server is updated. Assets and the agent script set their own caching and are
+// not HTML, so they are untouched.
+app.use('*', async (c, next) => {
+  await next();
+  if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
+    c.res.headers.set('cache-control', 'no-store');
+  }
+});
+
 /** A logged-in user can see their own sessions; a guest needs the join code. */
 function canAccess(c: Context, session: store.Session): boolean {
   return currentUserId(c) === session.owner || hasJoined(c, session.id);
