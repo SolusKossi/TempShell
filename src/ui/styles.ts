@@ -252,7 +252,8 @@ body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .codeblock pre { padding: 11px 12px; }
 @keyframes cb-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .rstat { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
-  padding: 2px 8px; border-radius: 20px; text-transform: uppercase; }
+  padding: 2px 8px; border-radius: 20px; text-transform: uppercase;
+  display: inline-block; position: relative; overflow: hidden; }
 .rstat.ok  { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
 .rstat.err { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
 .rstat.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
@@ -260,13 +261,23 @@ body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .rstat.run  { background: var(--accent-soft); color: var(--accent-hi); }
 .rstat.idle { background: var(--panel-3); color: var(--muted); }
 
-/* The status swap gets its own little flourish. */
-@keyframes stat-flip {
-  0%   { transform: scale(0.6) rotateX(90deg); opacity: 0; filter: blur(2px); }
-  55%  { transform: scale(1.14) rotateX(0deg); opacity: 1; filter: blur(0); }
-  100% { transform: scale(1); }
+/* The status swap: a bright shine sweeps across the pill while a glow ring in
+   the badge's own colour (green ok, red error, purple running) pulses out. No
+   scaling, so the pills never jump or change shape as a task settles. */
+.rstat.flip { animation: stat-glow 0.6s ease-out both; }
+.rstat.flip::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.65) 50%, transparent 70%);
+  animation: stat-sweep 0.6s ease-out;
 }
-.rstat.flip { animation: stat-flip 0.52s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+@keyframes stat-sweep {
+  from { transform: translateX(-130%); }
+  to   { transform: translateX(130%); }
+}
+@keyframes stat-glow {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
 
 /* Click anywhere on a step to open it. */
 .act.expandable { cursor: pointer; }
