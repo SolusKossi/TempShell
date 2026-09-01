@@ -720,6 +720,23 @@ export function haltAuto(sessionId: string): void {
 }
 
 /**
+ * The inverse of haltAuto, for reviving a stopped session while the agent is
+ * still paused: clear the stop flag and re-enable auto-run without a re-arm.
+ * Only meaningful while the executor still holds a token; returns whether one
+ * was there to revive.
+ */
+export function resumeAuto(sessionId: string): boolean {
+  const ex = getExecutor(sessionId);
+  const canResume = Boolean(ex && ex.armed && ex.token_hash);
+  db.prepare('UPDATE sessions SET auto_enabled = 1, outcome = NULL, outcome_note = NULL, updated_at = ? WHERE id = ?')
+    .run(Date.now(), sessionId);
+  if (canResume) db.prepare('UPDATE executors SET stop = 0 WHERE session_id = ?').run(sessionId);
+  bus.publish(`session:${sessionId}`);
+  bus.publish('sessions');
+  return canResume;
+}
+
+/**
  * Exchange a valid arming code for an executor token. Single use: the arming
  * hash is cleared whether or not it matched, so a wrong guess burns nothing but
  * a correct one cannot be replayed. Rate limiting lives in the route.

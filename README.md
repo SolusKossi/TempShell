@@ -118,6 +118,7 @@ Every call is `Authorization: Bearer $API_TOKEN`.
 | `GET  /api/sessions/:slug/wait` | long-poll for the next reply |
 | `GET  /api/sessions/:slug/autorun` | live status: connected, busy, awaiting approval |
 | `POST /api/sessions/:slug/approvals` | turn the approval gate off (`{on:true}`) or back on (`{on:false}`) |
+| `POST /api/sessions/:slug/autorun/resume` | revive a stopped session while its agent is still in the post-stop pause |
 | `POST /api/sessions/:slug/complete` | mark the task finished |
 
 Full detail is in `SKILL.md`.

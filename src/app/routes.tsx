@@ -612,6 +612,15 @@ api.post('/sessions/:slug/autorun/stop', (c) => {
   return c.json({ ok: true });
 });
 
+// Revive a session that was stopped, without a re-arm, while the agent is still
+// holding its post-stop pause. Clears the stop flag so the paused agent resumes.
+api.post('/sessions/:slug/autorun/resume', (c) => {
+  const session = ownedSession(c, c.get('uid'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const revived = store.resumeAuto(session.id);
+  return c.json({ ok: true, revived });
+});
+
 app.route('/api', api);
 
 /* ----------------------------------------------------- executor (agent) --- */
@@ -671,7 +680,25 @@ app.get('/x/:slug/poll', async (c) => {
     cmd = store.claimNextCommand(session.id);
   }
   if (!cmd) return c.json({ timed_out: true });
-  return c.json({ seq: cmd.seq, body: cmd.body, lang: cmd.lang });
+  return c.json({
+    seq: cmd.seq,
+    body: cmd.body,
+    lang: cmd.lang,
+    intent: cmd.intent ?? null,
+    why: cmd.why ?? null,
+    risk: cmd.risk ?? null,
+  });
+});
+
+// Lightweight liveness check for a paused agent. Unlike poll it claims nothing
+// and returns at once: it only reports whether the session is stopped, so an
+// agent holding a revivable pause can tell the instant the owner resumes it.
+app.get('/x/:slug/ping', (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const ex = executorAuth(c, session);
+  if (!ex) return c.json({ error: 'unauthorised' }, 401);
+  return c.json({ stopped: Boolean(ex.stop) || !session.auto_enabled });
 });
 
 // Post a command's result back; mark that command done so it is never re-served.
@@ -761,17 +788,18 @@ $slug  = '${slug}'
 $title = '${title}'
 $CAP = 100000
 $TIMEOUT = 120
+$PAUSE = 300
 $E = [char]27
 
-# The console defaults to the OEM code page (CP850 on this fleet), which renders
-# the rounded box corners and braille spinner as '?' and mangles non-ASCII output.
-# Force UTF-8 so the dashboard draws and so aoae/oslash survive round trips.
+# The console often defaults to an OEM code page (CP850), which renders the
+# rounded box corners and braille spinner as '?' and mangles non-ASCII output.
+# Force UTF-8 so the dashboard draws and so accented characters survive.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { [Console]::InputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# ANSI is used on Windows Terminal (the fleet's host) and PowerShell 7, which
-# both process virtual-terminal sequences. Elsewhere we fall back to plain lines.
+# ANSI is used on Windows Terminal and PowerShell 7, which both process
+# virtual-terminal sequences. Elsewhere we fall back to plain lines.
 $fancy = $false
 if ($env:WT_SESSION) { $fancy = $true } elseif ($PSVersionTable.PSVersion.Major -ge 7) { $fancy = $true }
 
@@ -781,12 +809,20 @@ function At($r, $c) { return $E + '[' + $r + ';' + $c + 'H' }
 function Col($n) { return $E + '[38;5;' + $n + 'm' }
 $RST = $E + '[0m'
 $EL  = $E + '[K'
+$BOLD = $E + '[1m'
 
 $SP = @([char]0x280B,[char]0x2819,[char]0x2839,[char]0x2838,[char]0x283C,[char]0x2834,[char]0x2826,[char]0x2827,[char]0x2807,[char]0x280F)
+$BLK = @([char]0x2581,[char]0x2582,[char]0x2583,[char]0x2584,[char]0x2585,[char]0x2586,[char]0x2587,[char]0x2588)
 $global:spin = 0
+$global:frame = 0
+$global:said = $false
+$global:inAlt = $false
+$global:armedOk = $false
+$global:spark = @()
+$global:flash = 0
 
 # Visible length: box math must ignore ANSI colour codes, or a coloured value
-# (the loader) counts hundreds of escape chars and blows past the column width.
+# counts hundreds of escape chars and blows past the column width.
 function VisLen([string]$s) { if ($null -eq $s) { return 0 } return ($s -replace ([char]27 + '\[[0-9;]*m'), '').Length }
 
 function Clamp([string]$s, [int]$n) {
@@ -804,63 +840,73 @@ $elevated = $false
 try { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
 
 $state = 'connecting'
-$curCmd = '-'
-$lastCmd = '-'
+$curIntent = '-'
+$curWhy = ''
+$curRisk = ''
+$lastIntent = '-'
 $lastLine = '-'
 $lastCol = 240
 $ranCount = 0
 $startedAt = Get-Date
-$phaseAt = Get-Date
-$conn = 'connected'
 $runStart = Get-Date
+$pauseEnd = Get-Date
+$conn = 'connected'
 
 # ---- drawing -----------------------------------------------------------------
-function Banner {
-  $b = @(
-    ' _____               ___ _        _ _ ',
-    '|_   _|__ _ __  _ __/ __| |_  ___| | |',
-    '  | |/ -_) ''  \| ''_ \__ \ '' \/ -_) | |',
-    '  |_|\___|_|_|_| .__/___/_||_\___|_|_|',
-    '               |_|                    '
-  )
-  $g = @(176, 170, 164, 127, 90)
-  for ($i = 0; $i -lt $b.Count; $i++) {
-    Put (At (2 + $i) 5)
-    Put ((Col $g[$i]) + $b[$i] + $RST)
+# The five-line logo, drawn with a purple gradient and a highlight band that
+# sweeps down the letters a little on each frame, so the banner shimmers.
+$LOGO = @(
+  ' _____               ___ _        _ _ ',
+  '|_   _|__ _ __  _ __/ __| |_  ___| | |',
+  '  | |/ -_) ''  \| '' \/ -_) | |',
+  '  |_|\___|_|_|_| .__/___/_||_\___|_|_|',
+  '               |_|                    '
+)
+$GRAD = @(90, 127, 164, 170, 176)
+
+function Banner($rowOff) {
+  $hp = ([Math]::Floor($global:frame / 2)) % ($LOGO.Count + 5)
+  for ($i = 0; $i -lt $LOGO.Count; $i++) {
+    $col = $GRAD[$i]
+    $d = $i - ($hp - 2)
+    if ($d -eq 0) { $col = 219 } elseif ($d -eq 1 -or $d -eq -1) { $col = 183 }
+    Put (At ($rowOff + $i) 5)
+    Put ((Col $col) + $LOGO[$i] + $RST)
     if ($i -eq 1) { Put ((Col 240) + '   auto-run agent' + $RST) }
     if ($i -eq 2) { Put ((Col 15) + '   ' + $instance + $RST) }
     Put $EL
   }
 }
 
-function Width { $cols = 100; try { $cols = [Console]::WindowWidth } catch {}; if ($cols -lt 34) { $cols = 34 }; return [Math]::Min($cols - 6, 108) }
+function Width { $cols = 100; try { $cols = [Console]::WindowWidth } catch {}; if ($cols -lt 40) { $cols = 40 }; return [Math]::Min($cols - 6, 132) }
 
-function BoxTop($row, $spc) {
+function BoxTop($row, $spc, $bcol) {
   $W = Width
   $seg = 2 + 3 + 9 + 10
   $dash = $W - $seg - 1; if ($dash -lt 0) { $dash = 0 }
   Put (At $row 4)
-  Put ((Col 90) + ([char]0x256D) + ([char]0x2500) + (Col 170) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col 90) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST + $EL)
+  Put ((Col $bcol) + ([char]0x256D) + ([char]0x2500) + (Col 170) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col $bcol) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST + $EL)
 }
-function BoxRule($row) {
+function BoxRule($row, $bcol) {
   $W = Width
   Put (At $row 4)
-  Put ((Col 90) + ([char]0x251C) + (([string][char]0x2500) * ($W - 2)) + ([char]0x2524) + $RST + $EL)
+  Put ((Col $bcol) + ([char]0x251C) + (([string][char]0x2500) * ($W - 2)) + ([char]0x2524) + $RST + $EL)
 }
-function BoxBot($row) {
+function BoxBot($row, $bcol) {
   $W = Width
   Put (At $row 4)
-  Put ((Col 90) + ([char]0x2570) + (([string][char]0x2500) * ($W - 2)) + ([char]0x256F) + $RST + $EL)
+  Put ((Col $bcol) + ([char]0x2570) + (([string][char]0x2500) * ($W - 2)) + ([char]0x256F) + $RST + $EL)
 }
-function BoxRow($row, $label, $value, $vcol) {
+function BoxRow($row, $label, $value, $vcol, $bcol) {
   $W = Width
   $v = Clamp $value ($W - 12)
   Put (At $row 4)
-  Put ((Col 90) + ([char]0x2502) + $RST + ' ' + (Col 244) + ('{0,-9}' -f $label) + $RST + (Col $vcol) + $v + $RST)
+  Put ((Col $bcol) + ([char]0x2502) + $RST + ' ' + (Col 244) + ('{0,-9}' -f $label) + $RST + (Col $vcol) + $v + $RST)
   $pad = $W - 12 - (VisLen $v); if ($pad -lt 0) { $pad = 0 }
-  Put ((' ' * $pad) + (Col 90) + ([char]0x2502) + $RST + $EL)
+  Put ((' ' * $pad) + (Col $bcol) + ([char]0x2502) + $RST + $EL)
 }
 
+# Knight-rider loader with a soft trailing gradient.
 function Loader($frame, $width) {
   $span = ($width * 2) - 2
   $pos = $frame % $span
@@ -873,52 +919,120 @@ function Loader($frame, $width) {
   return $s + $RST
 }
 
+# A block sparkline of the last commands' durations, brighter for the slower ones.
+function Spark {
+  if ($global:spark.Count -eq 0) { return '' }
+  $vals = @($global:spark)
+  $max = ($vals | Measure-Object -Maximum).Maximum; if ($max -le 0) { $max = 1 }
+  $s = ''
+  foreach ($d in $vals) {
+    $idx = [int][Math]::Round(($d / $max) * 7); if ($idx -lt 0) { $idx = 0 } elseif ($idx -gt 7) { $idx = 7 }
+    $c = 90; if ($idx -ge 6) { $c = 213 } elseif ($idx -ge 4) { $c = 170 } elseif ($idx -ge 2) { $c = 127 }
+    $s += (Col $c) + $BLK[$idx]
+  }
+  return $s + $RST
+}
+
 function StatusText {
   switch ($state) {
     'connecting' { return @('connecting', 208) }
-    'waiting'    { return @('waiting for a command', 40) }
-    'running'    { return @('running', 220) }
+    'waiting'    { return @('ready for the next step', 40) }
+    'running'    { return @('working', 220) }
     'sending'    { return @('sending result', 44) }
+    'paused'     { return @('paused', 213) }
     'stopped'    { return @('stopped', 240) }
     default      { return @($state, 250) }
   }
 }
 
-$PT = 9
+$PT = 8
 function Draw {
   if (-not $fancy) { return }
+  $global:frame++
   $dot = $SP[$global:spin % $SP.Count]; $global:spin++
   $st = StatusText
+  # The border breathes between two purples while active, and greys when stopped.
+  $bcol = 90; if ($state -eq 'running') { $bcol = @(90,97,133)[($global:frame % 3)] } elseif ($state -eq 'paused') { $bcol = @(133,169,133)[($global:frame % 3)] } elseif ($state -eq 'stopped') { $bcol = 240 }
+
+  Banner ($PT - 6)
   $adm = 'not admin'; if ($elevated) { $adm = 'admin' }
-  BoxTop ($PT + 0) $dot
-  BoxRow ($PT + 1) 'target' ("$hostName  $([char]0x00B7)  $userName  $([char]0x00B7)  PS $psv  $([char]0x00B7)  $adm") 15
-  BoxRow ($PT + 2) 'session' $title 250
-  BoxRule ($PT + 3)
+  BoxTop ($PT + 0) $dot $bcol
+  BoxRow ($PT + 1) 'target' ("$hostName  $([char]0x00B7)  $userName  $([char]0x00B7)  PS $psv  $([char]0x00B7)  $adm") 15 $bcol
+  BoxRow ($PT + 2) 'session' $title 250 $bcol
+  BoxRule ($PT + 3) $bcol
+
   $stTxt = "$dot $($st[0])"; if ($state -eq 'stopped') { $stTxt = $st[0] }
-  BoxRow ($PT + 4) 'status' $stTxt $st[1]
-  $cc = 240; if ($state -eq 'running') { $cc = 220 }
-  BoxRow ($PT + 5) 'command' $curCmd $cc
+  BoxRow ($PT + 4) 'status' $stTxt $st[1] $bcol
+
+  # The human status line: what this step is doing, from the web side. Brighter
+  # for a beat when it changes, and tinted amber while a risky step runs.
+  $dcol = 253; if ($global:flash -gt 0) { $dcol = 231; $global:flash-- } elseif ($state -ne 'running') { $dcol = 250 }
+  if ($state -eq 'running' -and $curRisk -eq 'risky') { $dcol = 214 }
+  BoxRow ($PT + 5) 'doing' $curIntent $dcol $bcol
+  BoxRow ($PT + 6) 'why' $curWhy 244 $bcol
+  BoxRule ($PT + 7) $bcol
+
   if ($state -eq 'running') {
     $secs = ((Get-Date) - $runStart).TotalSeconds
-    BoxRow ($PT + 6) 'working' ((Loader $global:spin 20) + ('  {0,4:0.0}s' -f $secs)) 170
+    BoxRow ($PT + 8) 'working' ((Loader $global:spin 22) + ('  {0,5:0.0}s' -f $secs)) 170 $bcol
+  } elseif ($state -eq 'paused') {
+    $left = [int][Math]::Ceiling(($pauseEnd - (Get-Date)).TotalSeconds); if ($left -lt 0) { $left = 0 }
+    $bar = Loader $global:spin 22
+    BoxRow ($PT + 8) 'reviving' ($bar + ('   closes in {0}:{1:00}' -f [int]($left/60), ($left % 60))) 213 $bcol
   } else {
-    BoxRow ($PT + 6) '' '' 240
+    BoxRow ($PT + 8) '' '' 240 $bcol
   }
-  BoxRule ($PT + 7)
-  BoxRow ($PT + 8) 'last' $lastCmd 250
-  BoxRow ($PT + 9) 'result' $lastLine $lastCol
-  BoxRule ($PT + 10)
+  BoxRule ($PT + 9) $bcol
+
+  BoxRow ($PT + 10) 'last' $lastIntent 250 $bcol
+  BoxRow ($PT + 11) 'result' $lastLine $lastCol $bcol
+  BoxRule ($PT + 12) $bcol
+
   $up = ((Get-Date) - $startedAt).TotalSeconds
-  BoxRow ($PT + 11) 'stats' ("ran $ranCount   $([char]0x00B7)   up {0:0}s   $([char]0x00B7)   $conn" -f $up) 240
-  BoxBot ($PT + 12)
-  Put (At ($PT + 14) 4); Put ((Col 240) + 'Ctrl+C to stop' + $RST + $EL)
+  $sp = Spark
+  $statsTxt = ("ran $ranCount   $([char]0x00B7)   up {0:0}s   $([char]0x00B7)   $conn" -f $up)
+  if ($sp) { $statsTxt = $statsTxt + '   ' + $sp }
+  BoxRow ($PT + 13) 'stats' $statsTxt 240 $bcol
+  BoxBot ($PT + 14) $bcol
+
+  Put (At ($PT + 16) 4)
+  if ($state -eq 'paused') {
+    Put ((Col 213) + 'Revive from Claude to keep going, or Ctrl+C to close now.' + $RST + $EL)
+  } else {
+    Put ((Col 240) + 'Ctrl+C to stop' + $RST + $EL)
+  }
 }
 
 function Plain([string]$m, [int]$c) {
   if ($fancy) { return }
   $fg = 'Gray'
-  if ($c -eq 40) { $fg = 'Green' } elseif ($c -eq 220) { $fg = 'Yellow' } elseif ($c -eq 196) { $fg = 'Red' } elseif ($c -eq 44) { $fg = 'Cyan' }
+  if ($c -eq 40) { $fg = 'Green' } elseif ($c -eq 220) { $fg = 'Yellow' } elseif ($c -eq 196) { $fg = 'Red' } elseif ($c -eq 44) { $fg = 'Cyan' } elseif ($c -eq 213) { $fg = 'Magenta' }
   Write-Host $m -ForegroundColor $fg
+}
+
+# The parting screen: leave the alternate buffer, wipe the pasted wall of code
+# from the normal screen, and rest on the logo and a sign-off instead.
+function Goodbye {
+  if ($global:said) { return }
+  $global:said = $true
+  if (-not $global:armedOk) {
+    if ($fancy -and $global:inAlt) { Put ($E + '[?25h'); Put ($E + '[?1049l') }
+    return
+  }
+  if ($fancy) {
+    Put ($E + '[?25h')
+    if ($global:inAlt) { Put ($E + '[?1049l'); $global:inAlt = $false }
+    Put ($E + '[2J'); Put ($E + '[H')
+    for ($i = 0; $i -lt $LOGO.Count; $i++) {
+      Put (At (2 + $i) 5); Put ((Col $GRAD[$i]) + $LOGO[$i] + $RST)
+    }
+    Put (At 8 5);  Put ((Col 213) + $BOLD + 'see ya later' + $RST)
+    Put (At 9 5);  Put ((Col 240) + "session closed  $([char]0x00B7)  ran $ranCount command(s)" + $RST)
+    Put (At 11 1)
+  } else {
+    Write-Host ''
+    Write-Host 'TempShell - see ya later.' -ForegroundColor Magenta
+  }
 }
 
 # Normalise a stream: drop CR (so CRLF and lone CR both become LF) and trim
@@ -942,10 +1056,7 @@ function Trunc([string]$s) {
 function Invoke-Cmd($cmd) {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $ps = [PowerShell]::Create()
-  # The sentinel runs only if the command reaches the end. PowerShell's exit keyword
-  # silently stops the pipeline with no exception and no exit code, so a script
-  # that exits early would otherwise report a clean, empty success.
-  $null = $ps.AddScript('$OutputEncoding=[System.Text.Encoding]::UTF8; try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}').AddStatement().AddScript($cmd + [char]10 + '$global:__clipReachedEnd = $true')
+  $null = $ps.AddScript('$OutputEncoding=[System.Text.Encoding]::UTF8; try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}').AddStatement().AddScript($cmd + [char]10 + '$global:__tsReachedEnd = $true')
   $out = New-Object System.Management.Automation.PSDataCollection[psobject]
   $in  = New-Object System.Management.Automation.PSDataCollection[psobject]
   $in.Complete()
@@ -964,10 +1075,6 @@ function Invoke-Cmd($cmd) {
   $info = @($ps.Streams.Information | ForEach-Object { $_.ToString() }) -join [char]10
   if ($info) { $info = NL $info; if ($so) { $so = $so + [char]10 + $info } else { $so = $info } }
 
-  # Structured error records, from the error stream: message plus the fields a
-  # caller needs to tell (say) access-denied from not-found without a re-run.
-  # Line numbers are relative to the submitted command, and no agent-harness
-  # frame is reported.
   $errRecords = @()
   foreach ($er in $ps.Streams.Error) {
     $ln = $null; if ($er.InvocationInfo -and $er.InvocationInfo.ScriptLineNumber -gt 0) { $ln = $er.InvocationInfo.ScriptLineNumber }
@@ -976,9 +1083,6 @@ function Invoke-Cmd($cmd) {
   }
   $errLines = @($ps.Streams.Error | ForEach-Object { [string]$_.Exception.Message })
   if ($term) {
-    # -ErrorAction Stop wraps the real error in an ActionPreferenceStopException;
-    # unwrap to the original record so category / target / id are the true cause,
-    # not the wrapper (which is always NotSpecified / null).
     $rec = $term; $unwrapped = $false
     $scan = $term.Exception
     while ($scan) {
@@ -987,8 +1091,6 @@ function Invoke-Cmd($cmd) {
     }
     $ex = $rec.Exception
     while ($ex.InnerException) { $ex = $ex.InnerException }
-    # Only report a line number when we have a real command record; a bare throw
-    # or a parse error would otherwise leak the agent's own line.
     $ln = $null
     if ($unwrapped -and $rec.InvocationInfo -and $rec.InvocationInfo.ScriptLineNumber -gt 0) { $ln = $rec.InvocationInfo.ScriptLineNumber }
     $tg = $null; if ($null -ne $rec.TargetObject) { $tg = [string]$rec.TargetObject }
@@ -1004,24 +1106,10 @@ function Invoke-Cmd($cmd) {
   $lec = $null
   try { $lec = $ps.Runspace.SessionStateProxy.PSVariable.GetValue('LASTEXITCODE') } catch { }
   $reachedEnd = $false
-  try { $reachedEnd = [bool]$ps.Runspace.SessionStateProxy.PSVariable.GetValue('__clipReachedEnd') } catch { }
-  # No terminating error, not a timeout, yet the end was never reached: the
-  # script called exit. The code itself cannot be recovered from a runspace, so
-  # say so rather than reporting success.
-  # Only a genuine early exit: nothing threw, nothing timed out, AND nothing was
-  # written to the error stream. A parse error also never reaches the sentinel,
-  # but it reports itself through the error stream, so it must not be described
-  # as an exit call.
+  try { $reachedEnd = [bool]$ps.Runspace.SessionStateProxy.PSVariable.GetValue('__tsReachedEnd') } catch { }
   $exitedEarly = ((-not $reachedEnd) -and (-not $term) -and (-not $timedOut) -and ($errRecords.Count -eq 0))
   if ($exitedEarly) { $errLines += 'Script called exit before completing. PowerShell does not surface the exit code through the agent, so it is reported as a failure without a code.'; $se = NL ($errLines -join [char]10) }
-  # Deliberately NOT $ps.HadErrors: that is true even when the script caught or
-  # suppressed the error itself (try/catch, -ErrorAction SilentlyContinue), which
-  # would report every defensive command as a failure. Judge on evidence that
-  # actually survived: an unhandled terminating error, records left on the error
-  # stream, a timeout, an early exit, or a native process exiting non-zero.
   $nativeFail = (($null -ne $lec) -and ([int]$lec -ne 0))
-  # A native tool can fail with nothing on the error stream, which left errors[]
-  # empty and no clue why the command failed. Record the exit itself.
   if ($nativeFail -and ($errRecords.Count -eq 0)) {
     $errRecords += [ordered]@{ message = ('A native command exited with code ' + [int]$lec + '.'); fq_error_id = 'NativeExitCode'; category = 'NotSpecified'; exception_type = ''; target = $null; script_line = $null }
   }
@@ -1033,39 +1121,64 @@ function Invoke-Cmd($cmd) {
 }
 
 # ---- arm (on a clean alternate screen when fancy) ----------------------------
-if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); Banner; Put (At 9 5) }
+if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); $global:inAlt = $true; Banner ($PT - 6); Put (At ($PT + 1) 5) }
 $pin = Read-Host '   Arming code from Claude'
 
 $armBody = @{ code = $pin; host = $hostName; user = $userName; ps = $psv; elevated = $elevated } | ConvertTo-Json
 try {
   $armed = Invoke-RestMethod "$base/x/$slug/arm" -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($armBody))
 } catch {
-  if ($fancy) { Put ($E + '[?1049l'); Put ($E + '[?25h') }
+  $global:said = $true
+  if ($fancy -and $global:inAlt) { Put ($E + '[?1049l'); Put ($E + '[?25h') }
   Write-Host '   Arming failed - wrong or expired code.' -ForegroundColor Red
   return
 }
 $tok = $armed.token
 $hdr = @{ Authorization = "Bearer $tok" }
-$state = 'waiting'; $phaseAt = Get-Date
-if ($fancy) { Put ($E + '[2J'); Put ($E + '[?25l'); Banner; Draw } else { Plain "Armed on $hostName as $userName (PS $psv, elevated $elevated). Ctrl+C to stop." 40 }
+$global:armedOk = $true
+$state = 'waiting'
+if ($fancy) { Put ($E + '[2J'); Put ($E + '[?25l'); Draw } else { Plain "Armed on $hostName as $userName (PS $psv, elevated $elevated). Ctrl+C to stop." 40 }
 
 # ---- main loop ---------------------------------------------------------------
 try {
-  while ($true) {
+  $running = $true
+  while ($running) {
     try {
       $wr = Invoke-WebRequest "$base/x/$slug/poll?timeout=2" -Headers $hdr -TimeoutSec 10 -UseBasicParsing
       $c = [System.Text.Encoding]::UTF8.GetString($wr.RawContentStream.ToArray()) | ConvertFrom-Json
       $conn = 'connected'
     } catch {
-      if ($_.Exception.Response.StatusCode.value__ -eq 401) { $state = 'stopped'; $conn = 'ended'; Draw; Plain 'Auto-run ended.' 250; break }
-      $conn = 'reconnecting'; $state = 'waiting'; Draw; Start-Sleep -Milliseconds 800; continue
+      if ($_.Exception.Response.StatusCode.value__ -eq 401) { $conn = 'ended'; break }
+      $conn = 'reconnecting'; if ($state -ne 'paused') { $state = 'waiting' }; Draw; Start-Sleep -Milliseconds 800; continue
     }
-    if ($c.stop) { $state = 'stopped'; Draw; Plain 'Stopped by owner.' 220; break }
-    if ($c.timed_out) { $state = 'waiting'; Draw; continue }
 
-    $curCmd = "$($c.body)"
+    if ($c.stop) {
+      # Do not tear down: hold a revivable pause so the owner can pick this
+      # session back up within the window. Poll ping (which claims nothing) to
+      # learn the moment they resume; on timeout, sign off.
+      $state = 'paused'; $conn = 'connected'; $pauseEnd = (Get-Date).AddSeconds($PAUSE)
+      $revived = $false
+      while ((Get-Date) -lt $pauseEnd) {
+        Draw; Start-Sleep -Milliseconds 200
+        try {
+          $pg = Invoke-RestMethod "$base/x/$slug/ping" -Headers $hdr -TimeoutSec 6 -UseBasicParsing
+          if (-not $pg.stopped) { $revived = $true; break }
+        } catch {
+          if ($_.Exception.Response.StatusCode.value__ -eq 401) { break }
+        }
+      }
+      if ($revived) { $state = 'waiting'; $conn = 'connected'; $lastLine = 'revived'; $lastCol = 40; Draw; continue }
+      break
+    }
+
+    if ($c.timed_out) { if ($state -ne 'waiting') { $state = 'waiting' }; Draw; continue }
+
+    $curIntent = if ($c.intent) { [string]$c.intent } else { [string]$c.body }
+    $curWhy = if ($c.why) { [string]$c.why } else { '' }
+    $curRisk = [string]$c.risk
+    $global:flash = 4
     $state = 'running'; $runStart = Get-Date
-    Plain ("> " + $c.body) 44
+    Plain ("> " + $curIntent) 44
     $r = Invoke-Cmd $c.body
 
     $to = Trunc $r.stdout; $te = Trunc $r.stderr
@@ -1078,14 +1191,15 @@ try {
     }
 
     $ranCount++
-    $lastCmd = $curCmd; $curCmd = '-'
+    $global:spark += [int]$r.ms; if ($global:spark.Count -gt 24) { $global:spark = @($global:spark[-24..-1]) }
+    $lastIntent = $curIntent; $curIntent = '-'; $curWhy = ''; $curRisk = ''
     if ($r.status -eq 'timeout') { $lastLine = 'timed out'; $lastCol = 196 } elseif ($r.had) { $lastLine = ("errors  ({0:0.0}s)" -f ($r.ms / 1000)); $lastCol = 196 } else { $lastLine = ('ok  ({0:0.0}s)' -f ($r.ms / 1000)); $lastCol = 40 }
     Plain ("  " + $lastLine) $lastCol
-    $state = 'waiting'; $phaseAt = Get-Date
+    $state = 'waiting'
     Draw
   }
 } finally {
-  if ($fancy) { Put ($E + '[?25h'); Put ($E + '[?1049l') }
+  Goodbye
 }
 }`;
 }

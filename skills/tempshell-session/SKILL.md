@@ -89,9 +89,11 @@ again for a fresh one.
 Every command you post **must** carry `intent` (what this does) and `why` (the
 reason), each one short line. They build the task summary on the session page, shown
 live as you post it, so whoever is at the machine can follow the chain of actions
-without decoding raw PowerShell, and read it back afterwards as a record. Write them
-for that human reader. A step with no intent shows up as a bare command and makes the
-log useless.
+without decoding raw PowerShell, and read it back afterwards as a record. The `intent`
+is also the line the agent's own terminal dashboard shows as its status while the
+command runs (the raw command is usually too long to read there), so write it for that
+human reader. A step with no intent shows up as a bare command and makes the log
+useless.
 
 Add `risk=risky` to anything that **changes the machine or could lose work**:
 restarting or stopping a service, deleting or overwriting files, registry writes,
@@ -314,8 +316,22 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST \
   "$BASE/api/sessions/$SLUG/autorun/stop"
 ```
 
-The agent sees the stop on its next poll and exits. Always stop auto-run when you are
-done, so a machine is never left with a live unattended shell.
+The agent sees the stop on its next poll. It does **not** vanish: it holds a paused
+screen for about five minutes (the person at the machine sees a countdown, not a wall
+of code), and only then signs off with a closing screen. Always stop auto-run when you
+are done, so a machine is never left with a live unattended shell.
+
+**Reviving within the pause.** If you stopped too early, you can bring the same session
+back without a re-arm, as long as you are inside that five-minute window:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -X POST \
+  "$BASE/api/sessions/$SLUG/autorun/resume"
+```
+
+The response is `{"revived": true}` when an armed agent was still paused and has picked
+back up; `false` means the window closed or the agent was never armed, and you need a
+fresh arm. After a revive, just post the next command as usual.
 
 ## Writing commands
 
