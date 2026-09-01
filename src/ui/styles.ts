@@ -67,13 +67,6 @@ body::after {
   color: var(--accent-hi); font-weight: 700;
 }
 .mark::before { content: "❯"; }  /* heavy prompt arrow */
-/* A block cursor blinking after the wordmark. */
-.brand::after {
-  content: ''; width: 8px; height: 15px; margin-left: 2px; align-self: center;
-  background: var(--accent-hi); border-radius: 1px;
-  animation: cursor-blink 1.1s steps(1) infinite;
-}
-@keyframes cursor-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 .brand .where { color: var(--muted); font-weight: 450; }
 .nav { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 
@@ -280,23 +273,10 @@ body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .rstat.run  { background: var(--accent-soft); color: var(--accent-hi); }
 .rstat.idle { background: var(--panel-3); color: var(--muted); }
 
-/* The status swap: a bright shine sweeps across the pill while a glow ring in
-   the badge's own colour (green ok, red error, purple running) pulses out. No
-   scaling, so the pills never jump or change shape as a task settles. */
-.rstat.flip { animation: stat-glow 0.6s ease-out both; }
-.rstat.flip::after {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.65) 50%, transparent 70%);
-  animation: stat-sweep 0.6s ease-out;
-}
-@keyframes stat-sweep {
-  from { transform: translateX(-130%); }
-  to   { transform: translateX(130%); }
-}
-@keyframes stat-glow {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
-  100% { box-shadow: 0 0 0 7px transparent; }
-}
+/* Neutral placeholder while the terminal-style status animation is being chosen
+   from the review screen: a quick fade-in, nothing shiny. */
+.rstat.flip { animation: stat-fade 0.25s ease-out both; }
+@keyframes stat-fade { from { opacity: 0.35; } to { opacity: 1; } }
 
 /* Click anywhere on a step to open it. */
 .act.expandable { cursor: pointer; }
