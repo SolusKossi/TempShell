@@ -396,19 +396,10 @@ form.inline { display: inline; margin: 0; }
 
 /* -------------------------------------------------------------- misc --- */
 
-/* ---------------------------------------------------------- run panel --- */
-
-/* The whole point of the target-machine view: copy, run, paste. The command
-   text itself is collapsed, because you do not need to read what you are
-   about to paste into a terminal. */
-
-.run { border: 1px solid var(--accent); border-radius: var(--r);
-       background: var(--panel-2); padding: 16px; box-shadow: 0 0 0 4px var(--accent-soft); }
-.run.idle { border-color: var(--border); box-shadow: none; background: var(--panel); }
-.run-head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
-.run-head .what { font-weight: 600; font-size: 15px; }
-.run-actions { display: flex; gap: 9px; align-items: center; }
-.run-actions .btn-copy { flex: 1 1 auto; padding: 13px 18px; font-size: 15px; font-weight: 600; }
+/* The manual run panel was removed with the copy-paste path. Its .run rule used
+   to collide with the activity feed's own running pill (class rstat + run),
+   padding it out to a big bordered box instead of a small pill the size of
+   ok/error, so it is gone rather than merely unused. */
 
 .disclosure { overflow: hidden; max-height: 0; opacity: 0;
               transition: max-height 0.3s cubic-bezier(0.4,0,0.2,1), opacity 0.22s ease,

@@ -1144,7 +1144,7 @@ function Invoke-Cmd($cmd) {
       if ($sw.Elapsed.TotalSeconds -ge $TIMEOUT) { $ps.Stop(); $timedOut = $true; break }
       Draw; Start-Sleep -Milliseconds 110
     }
-    if (-not $timedOut) { $ps.EndInvoke($h) }
+    if (-not $timedOut) { $null = $ps.EndInvoke($h) }
   } catch { $term = $_ }
   $sw.Stop()
 
@@ -1302,7 +1302,8 @@ try {
     }
 
     $ranCount++
-    $global:spark += [int]$r.ms; if ($global:spark.Count -gt 24) { $global:spark = @($global:spark[-24..-1]) }
+    try { $global:spark = @($global:spark) + [int]$r.ms } catch { }
+    if ($global:spark.Count -gt 24) { $global:spark = @($global:spark[-24..-1]) }
     $lastIntent = $curIntent; $curIntent = '-'; $curWhy = ''; $curRisk = ''
     if ($r.status -eq 'timeout') { $lastLine = 'timed out'; $lastCol = 196 } elseif ($r.had) { $lastLine = ("errors  ({0:0.0}s)" -f ($r.ms / 1000)); $lastCol = 196 } else { $lastLine = ('ok  ({0:0.0}s)' -f ($r.ms / 1000)); $lastCol = 40 }
     Plain ("  " + $lastLine) $lastCol
