@@ -55,17 +55,24 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST \
   "$BASE/api/sessions/$SLUG/autorun"
 ```
 
-Returns `{arming_code, join_code, ...}`. Both codes are **four digits**. The
-**arming code** is the security of the whole thing: it is shown only to you (the
-token holder), so it reaches the machine solely by you passing it on. Relay both
-codes and these three steps:
+Returns `{arming_code, join_code, join_url, ...}`. Both codes are **four digits**.
+The **arming code** is the security of the whole thing: it is shown only to you (the
+token holder), so it reaches the machine solely by you passing it on.
 
-1. Open the instance home page on the target machine (the `url` from step 1 without
-   its `/s/...` path) and enter the **join code**.
+**Hand the person `join_url` — it is the whole join step as one link.** It opens the
+session with no code to type, which sidesteps the one place this reliably goes wrong:
+a browser's autofill wiping the four-digit field, or a mistyped digit. Do **not** send
+them a bare `/s/<slug>` link; that needs a join cookie they do not have yet and just
+bounces them to the code box. Then relay these steps:
+
+1. Open **`join_url`** on the target machine. (Fallback if a link is awkward: open the
+   instance home page and type the **join code** — type it, do not paste, and press
+   Join.)
 2. Click **Copy PowerShell agent** and paste the whole thing into a **PowerShell**
    window. An *elevated* window is preferred but not required; it arms and runs in
    plain Windows PowerShell 5.1, non-elevated, which is the normal case here.
-3. When it asks for an arming code, enter the **arming code** you passed on.
+3. When it asks for an arming code, enter the **arming code** you passed on. This is
+   the one that goes in PowerShell, never in the web page.
 
 The agent paints a small live dashboard (status, current command, a looping loader
 while a command runs, last result). The person at the machine does not have to read

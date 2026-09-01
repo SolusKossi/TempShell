@@ -127,6 +127,25 @@ app.post('/accounts/:id/delete', (c) => {
 
 app.get('/join', (c) => c.html(JoinPage()));
 
+// One-tap join: the whole code box as a link. This is the escape hatch for the
+// person at the target machine, where typing or pasting a four digit code into a
+// field is exactly where things went wrong (autofill wiping it, a fat-fingered
+// digit). A bare /s/:slug does NOT work for them, it needs a join cookie first
+// and just bounces to /join; this grants that cookie and lands them on the page.
+// Same secret as the code box (four digits), so the same per-IP limit applies.
+app.get('/j/:code', (c) => {
+  if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
+    return c.html(JoinPage('Too many attempts. Try again later.'), 429);
+  }
+  const session = store.getSessionByCode(String(c.req.param('code')).trim());
+  if (!session) {
+    recordWrongGuess();
+    return c.html(JoinPage('That code did not match a session.'), 404);
+  }
+  grantJoin(c, session.id);
+  return c.redirect(`/s/${session.slug}`);
+});
+
 app.post('/join', async (c) => {
   // Four digits is only 9000 options, so guessing is limited per IP and globally.
   if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
@@ -567,8 +586,13 @@ api.post('/sessions/:slug/autorun', (c) => {
     ),
     expires_in_seconds: 900,
     join_code: session.code,
-    setup_url: `${config.publicUrl}/s/${session.slug}`,
-    note: 'Give the join code and the arming code to the person at the machine. They open the session, copy the Auto-run snippet into an admin PowerShell, and enter the arming code when it asks.',
+    // One-tap join, and the link to actually hand out: it grants access and lands
+    // on the session page. A bare /s/:slug does NOT work for the person at the
+    // machine (no join cookie yet) and bounces them to the code box, which is the
+    // fiddly step to avoid. join_url skips the code box entirely.
+    join_url: `${config.publicUrl}/j/${session.code}`,
+    join_page_url: `${config.publicUrl}/join`,
+    note: 'Easiest: send the person at the machine the join_url, which opens the session with no code to type. Otherwise they open the instance home page, enter the join code, then Copy the auto-run snippet into PowerShell and enter the arming code when it asks. The arming code goes in PowerShell, never in the web page.',
   });
 });
 

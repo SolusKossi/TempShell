@@ -27,7 +27,8 @@ export function JoinPage(error?: string) {
       ${error ? html`<div class="flash error">${error}</div>` : ''}
       <form method="post" action="/join" id="joinForm" class="stack">
         <input type="tel" id="code" name="code" class="code-input" inputmode="numeric"
-               pattern="[0-9]{4}" maxlength="4" autocomplete="off" autofocus>
+               pattern="[0-9]{4}" maxlength="4" autocomplete="off"
+               data-lpignore="true" data-1p-ignore data-form-type="other" autofocus>
         <button class="primary" type="submit" style="width:100%">Join</button>
       </form>
       <p class="small muted" style="text-align:center;margin-top:22px">
@@ -441,9 +442,13 @@ function formatBytes(n: number): string {
 
 const JOIN_SCRIPT = `
 const code = document.getElementById('code');
+// Keep it to four digits, but NEVER auto-submit. A submit fired from inside an
+// input/paste/autofill event is what made the field look like it "cleared itself"
+// mid-type: the page reloaded before the value was committed. The person presses
+// Join (or Enter) when the four digits are in.
 code.addEventListener('input', () => {
-  code.value = code.value.replace(/[^0-9]/g, '');
-  if (code.value.length === 4) document.getElementById('joinForm').submit();
+  const digits = code.value.replace(/[^0-9]/g, '').slice(0, 4);
+  if (digits !== code.value) code.value = digits;
 });
 `;
 
