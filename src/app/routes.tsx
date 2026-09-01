@@ -893,7 +893,6 @@ $global:frame = 0
 $global:said = $false
 $global:inAlt = $false
 $global:armedOk = $false
-$global:spark = @()
 $global:flash = 0
 
 # Visible length: box math must ignore ANSI colour codes, or a coloured value
@@ -918,7 +917,6 @@ $state = 'connecting'
 $curIntent = '-'
 $curWhy = ''
 $curRisk = ''
-$lastIntent = '-'
 $lastLine = '-'
 $lastCol = 240
 $ranCount = 0
@@ -996,16 +994,17 @@ function Loader($frame, $width) {
   return $s + $RST
 }
 
-# A block sparkline of the last commands' durations, brighter for the slower ones.
-function Spark {
-  if ($global:spark.Count -eq 0) { return '' }
-  $vals = @($global:spark)
-  $max = ($vals | Measure-Object -Maximum).Maximum; if ($max -le 0) { $max = 1 }
+# The connected heartbeat: a bright band slides along a dim rule and loops, so
+# there is always motion while the link is up, whether or not a command is running.
+function Heartbeat($frame, $width) {
+  $pos = $frame % ($width + 8)
   $s = ''
-  foreach ($d in $vals) {
-    $idx = [int][Math]::Round(($d / $max) * 7); if ($idx -lt 0) { $idx = 0 } elseif ($idx -gt 7) { $idx = 7 }
-    $c = 54; if ($idx -ge 6) { $c = 141 } elseif ($idx -ge 4) { $c = 99 } elseif ($idx -ge 2) { $c = 92 }
-    $s += (Col $c) + $BLK[$idx]
+  for ($i = 0; $i -lt $width; $i++) {
+    $d = $pos - $i
+    if ($d -eq 0 -or $d -eq 1) { $s += (Col 183) + ([char]0x2501) }
+    elseif ($d -eq 2) { $s += (Col 141) + ([char]0x2501) }
+    elseif ($d -eq 3) { $s += (Col 98) + ([char]0x2500) }
+    else { $s += (Col 54) + ([char]0x2500) }
   }
   return $s + $RST
 }
@@ -1038,7 +1037,12 @@ function Draw {
   BoxRow ($PT + 2) 'session' $title 250 $bcol
   BoxRule ($PT + 3) $bcol
 
-  $stTxt = "$dot $($st[0])"; if ($state -eq 'stopped') { $stTxt = $st[0] }
+  # A breathing dot for the status line: not the top-border spinner (a shape
+  # cycle) and not the working row (knight-rider), just a filled dot pulsing
+  # through the purples, so "alive" reads distinctly from "working".
+  $pulse = @(53,54,55,92,98,141,183,141,98,92,55,54)
+  $pdot = (Col $pulse[$global:frame % $pulse.Count]) + ([char]0x25CF)
+  $stTxt = "$pdot" + (Col $st[1]) + " $($st[0])"; if ($state -eq 'stopped') { $stTxt = $st[0] }
   BoxRow ($PT + 4) 'status' $stTxt $st[1] $bcol
 
   # The human status line: what this step is doing, from the web side. Brighter
@@ -1056,23 +1060,23 @@ function Draw {
     $left = [int][Math]::Ceiling(($pauseEnd - (Get-Date)).TotalSeconds); if ($left -lt 0) { $left = 0 }
     $bar = Loader $global:spin 22
     BoxRow ($PT + 8) 'reviving' ($bar + ('   closes in {0}:{1:00}' -f [int]($left/60), ($left % 60))) 141 $bcol
-  } else {
+  } elseif ($state -eq 'stopped') {
     BoxRow ($PT + 8) '' '' 240 $bcol
+  } else {
+    # Connected and idle: the heartbeat keeps moving so the link never looks dead.
+    BoxRow ($PT + 8) 'link' ((Heartbeat $global:frame 22) + '   connected') 141 $bcol
   }
   BoxRule ($PT + 9) $bcol
 
-  BoxRow ($PT + 10) 'last' $lastIntent 250 $bcol
-  BoxRow ($PT + 11) 'result' $lastLine $lastCol $bcol
-  BoxRule ($PT + 12) $bcol
+  BoxRow ($PT + 10) 'result' $lastLine $lastCol $bcol
+  BoxRule ($PT + 11) $bcol
 
   $up = ((Get-Date) - $startedAt).TotalSeconds
-  $sp = Spark
   $statsTxt = ("ran $ranCount   $([char]0x00B7)   up {0:0}s   $([char]0x00B7)   $conn" -f $up)
-  if ($sp) { $statsTxt = $statsTxt + '   ' + $sp }
-  BoxRow ($PT + 13) 'stats' $statsTxt 240 $bcol
-  BoxBot ($PT + 14) $bcol
+  BoxRow ($PT + 12) 'stats' $statsTxt 240 $bcol
+  BoxBot ($PT + 13) $bcol
 
-  Put (At ($PT + 16) 4)
+  Put (At ($PT + 15) 4)
   if ($state -eq 'paused') {
     Put ((Col 141) + 'Revive from Claude to keep going, or Ctrl+C to close now.' + $RST + $EL)
   } else {
@@ -1302,9 +1306,9 @@ try {
     }
 
     $ranCount++
-    try { $global:spark = @($global:spark) + [int]$r.ms } catch { }
-    if ($global:spark.Count -gt 24) { $global:spark = @($global:spark[-24..-1]) }
-    $lastIntent = $curIntent; $curIntent = '-'; $curWhy = ''; $curRisk = ''
+    # Leave $curIntent and $curWhy on the dashboard: the last thing done stays
+    # under "doing" until the next command replaces it, rather than blanking to '-'.
+    $curRisk = ''
     if ($r.status -eq 'timeout') { $lastLine = 'timed out'; $lastCol = 196 } elseif ($r.had) { $lastLine = ("errors  ({0:0.0}s)" -f ($r.ms / 1000)); $lastCol = 196 } else { $lastLine = ('ok  ({0:0.0}s)' -f ($r.ms / 1000)); $lastCol = 40 }
     Plain ("  " + $lastLine) $lastCol
     $state = 'waiting'
