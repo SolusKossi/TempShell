@@ -125,13 +125,11 @@ app.post('/accounts/:id/delete', (c) => {
   return c.redirect('/accounts');
 });
 
-app.get('/join', (c) => c.html(JoinPage()));
-
 // One-tap join: the whole code box as a link. This is the escape hatch for the
 // person at the target machine, where typing or pasting a four digit code into a
 // field is exactly where things went wrong (autofill wiping it, a fat-fingered
 // digit). A bare /s/:slug does NOT work for them, it needs a join cookie first
-// and just bounces to /join; this grants that cookie and lands them on the page.
+// and just bounces to the landing page; this grants the cookie and lands them in.
 // Same secret as the code box (four digits), so the same per-IP limit applies.
 app.get('/j/:code', (c) => {
   if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
@@ -228,7 +226,7 @@ app.get('/stream', (c) => {
 app.get('/s/:slug', (c) => {
   const session = store.getSession(c.req.param('slug'));
   if (!session) return c.notFound();
-  if (!canAccess(c, session)) return c.redirect('/join');
+  if (!canAccess(c, session)) return c.redirect('/');
   return c.html(
     SessionPage(session, store.listEntries(session.id), currentUserId(c) === session.owner, sessionView(session)),
   );
@@ -261,7 +259,7 @@ function decide(c: Context, approve: boolean) {
   // Standalone helper, so the params are not route-narrowed for us.
   const session = store.getSession(c.req.param('slug') ?? '');
   if (!session) return c.notFound();
-  if (!canAccess(c, session)) return c.redirect('/join');
+  if (!canAccess(c, session)) return c.redirect('/');
   const seq = Number(c.req.param('seq'));
   const who = currentUserId(c) === session.owner ? 'admin' : 'guest';
   const entry = Number.isFinite(seq) ? store.decideCommand(session.id, seq, approve, who) : null;
@@ -289,7 +287,7 @@ app.post('/s/:slug/deny/:seq', (c) => decide(c, false));
 app.post('/s/:slug/autorun-stop', (c) => {
   const session = store.getSession(c.req.param('slug'));
   if (!session) return c.notFound();
-  if (!canAccess(c, session)) return c.redirect('/join');
+  if (!canAccess(c, session)) return c.redirect('/');
   store.haltAuto(session.id);
   return c.redirect(`/s/${session.slug}`);
 });
@@ -394,7 +392,7 @@ api.post('/sessions', async (c) => {
       title: session.title,
       code: session.code,
       url: `${config.publicUrl}/s/${session.slug}`,
-      join_url: `${config.publicUrl}/join`,
+      join_url: `${config.publicUrl}/j/${session.code}`,
     },
     201,
   );
@@ -591,7 +589,7 @@ api.post('/sessions/:slug/autorun', (c) => {
     // machine (no join cookie yet) and bounces them to the code box, which is the
     // fiddly step to avoid. join_url skips the code box entirely.
     join_url: `${config.publicUrl}/j/${session.code}`,
-    join_page_url: `${config.publicUrl}/join`,
+    join_page_url: `${config.publicUrl}/`,
     note: 'Easiest: send the person at the machine the join_url, which opens the session with no code to type. Otherwise they open the instance home page, enter the join code, then Copy the auto-run snippet into PowerShell and enter the arming code when it asks. The arming code goes in PowerShell, never in the web page.',
   });
 });

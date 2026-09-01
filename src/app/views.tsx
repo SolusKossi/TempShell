@@ -59,7 +59,7 @@ export function LoginPage(error?: string) {
         <button class="primary" type="submit" style="width:100%">Sign in</button>
       </form>
       <p class="small muted" style="text-align:center;margin-top:22px">
-        <a href="/join">Join with a code instead</a>
+        <a href="/">Join with a code instead</a>
       </p>
     `,
   });
@@ -72,7 +72,6 @@ export function HomePage(quick: string, sessions: SessionRow[], isOwnerUser: boo
     title: 'TempShell',
     nav: [
       ...(isOwnerUser ? [{ href: '/accounts', label: 'Accounts' }] : []),
-      { href: '/join', label: 'Join code' },
       { href: '/logout', label: 'Sign out' },
     ],
     script: AUTOGROW + HOME_SCRIPT,
@@ -386,7 +385,7 @@ export function SessionPage(session: Session, entries: Entry[], isOwner: boolean
         { href: '/', label: 'All sessions' },
         { href: '#delete', label: 'Delete' },
       ]
-    : [{ href: '/join', label: 'Leave' }];
+    : [{ href: '/', label: 'Leave' }];
 
   // Auto-run is the only mode now: a status line, a read-only activity log, and
   // the setup card only while no agent is connected. Screenshots go in through the
@@ -442,13 +441,13 @@ function formatBytes(n: number): string {
 
 const JOIN_SCRIPT = `
 const code = document.getElementById('code');
-// Keep it to four digits, but NEVER auto-submit. A submit fired from inside an
-// input/paste/autofill event is what made the field look like it "cleared itself"
-// mid-type: the page reloaded before the value was committed. The person presses
-// Join (or Enter) when the four digits are in.
+// Auto-submit once four digits are in: proven over many sessions, and a nice touch
+// now that the code box is only a fallback behind the one-tap join link. The
+// input is marked data-lpignore / data-1p-ignore so a password manager does not
+// reach in and wipe it.
 code.addEventListener('input', () => {
-  const digits = code.value.replace(/[^0-9]/g, '').slice(0, 4);
-  if (digits !== code.value) code.value = digits;
+  code.value = code.value.replace(/[^0-9]/g, '').slice(0, 4);
+  if (code.value.length === 4) document.getElementById('joinForm').submit();
 });
 `;
 
