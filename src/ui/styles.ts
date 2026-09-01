@@ -66,7 +66,7 @@ body::after {
   width: auto; height: auto; flex: 0 0 auto; background: none;
   color: var(--accent-hi); font-weight: 700;
 }
-.mark::before { content: "¾F"; }  /* heavy prompt arrow */
+.mark::before { content: "❯"; }  /* heavy prompt arrow */
 /* A block cursor blinking after the wordmark. */
 .brand::after {
   content: ''; width: 8px; height: 15px; margin-left: 2px; align-self: center;
@@ -645,7 +645,7 @@ button:active, .btn:active { transform: translateY(1px) scale(0.99); }
    session scrolling past rather than a list of cards. */
 .act-head { position: relative; padding-left: 15px; }
 .act-head::before {
-  content: "¾F"; position: absolute; left: 0; top: 0;
+  content: "❯"; position: absolute; left: 0; top: 0;
   color: var(--accent-hi); font-weight: 700; opacity: 0.7;
 }
 
@@ -659,9 +659,9 @@ button:active, .btn:active { transform: translateY(1px) scale(0.99); }
 .statuscard::after  { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
 .statuscard.live::before, .statuscard.live::after { border-color: var(--ok); opacity: 0.7; }
 .statuscard .sc-title { font-weight: 600; font-size: 14px; }
-.statuscard .sc-title::before { content: "¾F "; color: var(--accent-hi); }
-.statuscard.done .sc-title::before { content: "¹4 "; color: var(--ok); }
-.statuscard.inactive .sc-title::before { content: " D7 "; color: var(--muted); }
+.statuscard .sc-title::before { content: "❯ "; color: var(--accent-hi); }
+.statuscard.done .sc-title::before { content: "✔ "; color: var(--ok); }
+.statuscard.inactive .sc-title::before { content: "× "; color: var(--muted); }
 
 /* A code block gets a faux title bar with three dots, like a terminal window. */
 .codeblock { position: relative; }
