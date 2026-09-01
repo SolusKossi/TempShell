@@ -452,6 +452,12 @@ api.post('/sessions/:slug/command', async (c) => {
   // Tell the caller which loop it is in: will this run by itself, or wait for a human?
   const ex = store.getExecutor(session.id);
   const autorun = session.auto_enabled ? (ex?.armed && !ex.stop ? 'armed' : 'waiting-to-arm') : 'manual';
+  const held = entry.approval === 'pending';
+  // The server classifies risk itself, so a caller that posted without a risk
+  // flag can still find its command held. Saying why, right here, is the
+  // difference between "waiting on a human" and what otherwise looks like a
+  // hung agent.
+  const reason = held ? store.riskReason(text) : null;
   return c.json(
     {
       ok: true,
@@ -459,6 +465,12 @@ api.post('/sessions/:slug/command', async (c) => {
       autorun,
       // 'pending' means a human at the machine must approve before it runs.
       approval: entry.approval ?? null,
+      ...(held
+        ? {
+            risk_reason: reason,
+            held_note: `Held for approval: ${reason ?? 'flagged as risky'}. Someone at the machine must press Approve before it runs. Tell the user, do not re-post it.`,
+          }
+        : {}),
       url: `${config.publicUrl}/s/${session.slug}`,
     },
     201,
@@ -510,9 +522,25 @@ api.get('/files/:id', (c) => {
 
 api.get('/quick', (c) => c.json(store.getQuick(c.get('uid'))));
 
+// Accepts either {"body":"..."} or a raw text/plain body, because every other
+// write endpoint here takes text/plain and guessing wrong used to raise a 500
+// from the unguarded JSON parse rather than saying what was expected.
 api.put('/quick', async (c) => {
-  const { body } = await c.req.json<{ body?: string }>();
-  store.setQuick(c.get('uid'), String(body ?? '').slice(0, 500_000));
+  const ctype = c.req.header('content-type') ?? '';
+  let body: string;
+  if (ctype.startsWith('text/plain')) {
+    body = Buffer.from(await c.req.arrayBuffer()).toString('utf8');
+  } else {
+    const parsed = safeParse<{ body?: string }>(await c.req.raw.clone().text());
+    if (!parsed.ok) {
+      return c.json(
+        { error: 'invalid JSON body', detail: parsed.error, hint: 'send {"body":"..."}, or Content-Type: text/plain with the raw text' },
+        400,
+      );
+    }
+    body = String(parsed.value.body ?? '');
+  }
+  store.setQuick(c.get('uid'), body.slice(0, 500_000));
   return c.json({ ok: true });
 });
 
@@ -530,6 +558,13 @@ api.post('/sessions/:slug/autorun', (c) => {
   return c.json({
     ok: true,
     arming_code: armingCode,
+    // The code expires; without this the caller could not tell a slow user from
+    // a dead code, and had to re-mint blind.
+    arming_expires_at: store.getExecutor(session.id)?.arm_expires ?? null,
+    arming_expires_in_seconds: Math.max(
+      0,
+      Math.round(((store.getExecutor(session.id)?.arm_expires ?? Date.now()) - Date.now()) / 1000),
+    ),
     expires_in_seconds: 900,
     join_code: session.code,
     setup_url: `${config.publicUrl}/s/${session.slug}`,
@@ -557,6 +592,9 @@ api.get('/sessions/:slug/autorun', (c) => {
     armed: Boolean(ex?.armed) && !ex?.stop,
     stopped: Boolean(ex?.stop),
     last_seen: ex?.last_seen ?? null,
+    // Only meaningful before the agent arms; null once it has.
+    arming_expires_in_seconds:
+      ex && !ex.armed && ex.arm_expires ? Math.max(0, Math.round((ex.arm_expires - Date.now()) / 1000)) : null,
     // last_seen freezes while a command runs; `busy` says the agent is executing,
     // so a stale last_seen with busy:true is working, not dead.
     busy: runningSince != null,
@@ -856,20 +894,22 @@ $conn = 'connected'
 # The five-line logo, drawn with a purple gradient and a highlight band that
 # sweeps down the letters a little on each frame, so the banner shimmers.
 $LOGO = @(
-  ' _____               ___ _        _ _ ',
-  '|_   _|__ _ __  _ __/ __| |_  ___| | |',
-  '  | |/ -_) ''  \| '' \/ -_) | |',
-  '  |_|\___|_|_|_| .__/___/_||_\___|_|_|',
-  '               |_|                    '
+  ' _____                   ____  _          _ _ ',
+  '|_   _|__ _ __ ___  _ __/ ___|| |__   ___| | |',
+  '  | |/ _ \ ''_ @ _ \| ''_ \___ \| ''_ \ / _ \ | |',
+  '  | |  __/ | | | | | |_) |__) | | | |  __/ | |',
+  '  |_|\___|_| |_| |_| .__/____/|_| |_|\___|_|_|',
+  '                   |_|                        '
 )
-$GRAD = @(90, 127, 164, 170, 176)
+$LOGO = @($LOGO | ForEach-Object { $_.Replace('@', [char]96) })
+$GRAD = @(55, 92, 93, 99, 105, 141)
 
 function Banner($rowOff) {
   $hp = ([Math]::Floor($global:frame / 2)) % ($LOGO.Count + 5)
   for ($i = 0; $i -lt $LOGO.Count; $i++) {
     $col = $GRAD[$i]
     $d = $i - ($hp - 2)
-    if ($d -eq 0) { $col = 219 } elseif ($d -eq 1 -or $d -eq -1) { $col = 183 }
+    if ($d -eq 0) { $col = 183 } elseif ($d -eq 1 -or $d -eq -1) { $col = 141 }
     Put (At ($rowOff + $i) 5)
     Put ((Col $col) + $LOGO[$i] + $RST)
     if ($i -eq 1) { Put ((Col 240) + '   auto-run agent' + $RST) }
@@ -885,7 +925,7 @@ function BoxTop($row, $spc, $bcol) {
   $seg = 2 + 3 + 9 + 10
   $dash = $W - $seg - 1; if ($dash -lt 0) { $dash = 0 }
   Put (At $row 4)
-  Put ((Col $bcol) + ([char]0x256D) + ([char]0x2500) + (Col 170) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col $bcol) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST + $EL)
+  Put ((Col $bcol) + ([char]0x256D) + ([char]0x2500) + (Col 141) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col $bcol) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST + $EL)
 }
 function BoxRule($row, $bcol) {
   $W = Width
@@ -914,7 +954,7 @@ function Loader($frame, $width) {
   $s = ''
   for ($i = 0; $i -lt $width; $i++) {
     $d = [Math]::Abs($i - $pos)
-    if ($d -eq 0) { $s += (Col 213) + ([char]0x2588) } elseif ($d -eq 1) { $s += (Col 170) + ([char]0x2593) } elseif ($d -eq 2) { $s += (Col 127) + ([char]0x2592) } else { $s += (Col 53) + ([char]0x2591) }
+    if ($d -eq 0) { $s += (Col 183) + ([char]0x2588) } elseif ($d -eq 1) { $s += (Col 141) + ([char]0x2593) } elseif ($d -eq 2) { $s += (Col 99) + ([char]0x2592) } else { $s += (Col 54) + ([char]0x2591) }
   }
   return $s + $RST
 }
@@ -927,7 +967,7 @@ function Spark {
   $s = ''
   foreach ($d in $vals) {
     $idx = [int][Math]::Round(($d / $max) * 7); if ($idx -lt 0) { $idx = 0 } elseif ($idx -gt 7) { $idx = 7 }
-    $c = 90; if ($idx -ge 6) { $c = 213 } elseif ($idx -ge 4) { $c = 170 } elseif ($idx -ge 2) { $c = 127 }
+    $c = 54; if ($idx -ge 6) { $c = 141 } elseif ($idx -ge 4) { $c = 99 } elseif ($idx -ge 2) { $c = 92 }
     $s += (Col $c) + $BLK[$idx]
   }
   return $s + $RST
@@ -939,22 +979,22 @@ function StatusText {
     'waiting'    { return @('ready for the next step', 40) }
     'running'    { return @('working', 220) }
     'sending'    { return @('sending result', 44) }
-    'paused'     { return @('paused', 213) }
+    'paused'     { return @('paused', 141) }
     'stopped'    { return @('stopped', 240) }
     default      { return @($state, 250) }
   }
 }
 
-$PT = 8
+$PT = 9
 function Draw {
   if (-not $fancy) { return }
   $global:frame++
   $dot = $SP[$global:spin % $SP.Count]; $global:spin++
   $st = StatusText
-  # The border breathes between two purples while active, and greys when stopped.
-  $bcol = 90; if ($state -eq 'running') { $bcol = @(90,97,133)[($global:frame % 3)] } elseif ($state -eq 'paused') { $bcol = @(133,169,133)[($global:frame % 3)] } elseif ($state -eq 'stopped') { $bcol = 240 }
+  # One steady colour per state. An animated border reads as a flash, not as life.
+  $bcol = 92; if ($state -eq 'paused') { $bcol = 98 } elseif ($state -eq 'stopped') { $bcol = 240 }
 
-  Banner ($PT - 6)
+  Banner ($PT - 7)
   $adm = 'not admin'; if ($elevated) { $adm = 'admin' }
   BoxTop ($PT + 0) $dot $bcol
   BoxRow ($PT + 1) 'target' ("$hostName  $([char]0x00B7)  $userName  $([char]0x00B7)  PS $psv  $([char]0x00B7)  $adm") 15 $bcol
@@ -978,7 +1018,7 @@ function Draw {
   } elseif ($state -eq 'paused') {
     $left = [int][Math]::Ceiling(($pauseEnd - (Get-Date)).TotalSeconds); if ($left -lt 0) { $left = 0 }
     $bar = Loader $global:spin 22
-    BoxRow ($PT + 8) 'reviving' ($bar + ('   closes in {0}:{1:00}' -f [int]($left/60), ($left % 60))) 213 $bcol
+    BoxRow ($PT + 8) 'reviving' ($bar + ('   closes in {0}:{1:00}' -f [int]($left/60), ($left % 60))) 141 $bcol
   } else {
     BoxRow ($PT + 8) '' '' 240 $bcol
   }
@@ -997,7 +1037,7 @@ function Draw {
 
   Put (At ($PT + 16) 4)
   if ($state -eq 'paused') {
-    Put ((Col 213) + 'Revive from Claude to keep going, or Ctrl+C to close now.' + $RST + $EL)
+    Put ((Col 141) + 'Revive from Claude to keep going, or Ctrl+C to close now.' + $RST + $EL)
   } else {
     Put ((Col 240) + 'Ctrl+C to stop' + $RST + $EL)
   }
@@ -1006,7 +1046,7 @@ function Draw {
 function Plain([string]$m, [int]$c) {
   if ($fancy) { return }
   $fg = 'Gray'
-  if ($c -eq 40) { $fg = 'Green' } elseif ($c -eq 220) { $fg = 'Yellow' } elseif ($c -eq 196) { $fg = 'Red' } elseif ($c -eq 44) { $fg = 'Cyan' } elseif ($c -eq 213) { $fg = 'Magenta' }
+  if ($c -eq 40) { $fg = 'Green' } elseif ($c -eq 220) { $fg = 'Yellow' } elseif ($c -eq 196) { $fg = 'Red' } elseif ($c -eq 44) { $fg = 'Cyan' } elseif ($c -eq 141) { $fg = 'Magenta' }
   Write-Host $m -ForegroundColor $fg
 }
 
@@ -1026,9 +1066,9 @@ function Goodbye {
     for ($i = 0; $i -lt $LOGO.Count; $i++) {
       Put (At (2 + $i) 5); Put ((Col $GRAD[$i]) + $LOGO[$i] + $RST)
     }
-    Put (At 8 5);  Put ((Col 213) + $BOLD + 'see ya later' + $RST)
-    Put (At 9 5);  Put ((Col 240) + "session closed  $([char]0x00B7)  ran $ranCount command(s)" + $RST)
-    Put (At 11 1)
+    Put (At 9 5);  Put ((Col 141) + $BOLD + 'see ya later' + $RST)
+    Put (At 10 5); Put ((Col 240) + "session closed  $([char]0x00B7)  ran $ranCount command(s)" + $RST)
+    Put (At 12 1)
   } else {
     Write-Host ''
     Write-Host 'TempShell - see ya later.' -ForegroundColor Magenta
@@ -1120,8 +1160,42 @@ function Invoke-Cmd($cmd) {
   return @{ stdout = "$so"; stderr = "$se"; exit_code = $(if ($null -ne $lec) { [int]$lec } else { $null }); status = $status; had = $hadErr; ms = $sw.ElapsedMilliseconds; errors = $errRecords }
 }
 
+# Run an HTTP GET in its own runspace, drawing at a steady rate while it is in
+# flight. The dashboard used to redraw only when a long poll returned, so idle
+# animation stuttered while a running command animated smoothly; now every state
+# advances at the same cadence regardless of what the network is doing.
+function Get-Async($url, $hdr, $timeoutSec) {
+  $ps = [PowerShell]::Create()
+  $null = $ps.AddScript({
+    param($u, $h, $t)
+    try {
+      $wr = Invoke-WebRequest $u -Headers $h -TimeoutSec $t -UseBasicParsing
+      return @{ ok = $true; text = [System.Text.Encoding]::UTF8.GetString($wr.RawContentStream.ToArray()) }
+    } catch {
+      $code = 0
+      try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+      return @{ ok = $false; code = $code }
+    }
+  }).AddArgument($url).AddArgument($hdr).AddArgument($timeoutSec)
+  $res = $null
+  try {
+    $h = $ps.BeginInvoke()
+    while (-not $h.IsCompleted) { Draw; Start-Sleep -Milliseconds 110 }
+    $res = @($ps.EndInvoke($h))[0]
+  } catch { $res = $null }
+  try { $ps.Dispose() } catch {}
+  if ($null -eq $res) { return @{ ok = $false; code = 0 } }
+  return $res
+}
+
+# Animate in place for a stretch, instead of a dead Start-Sleep.
+function Idle($ms) {
+  $until = (Get-Date).AddMilliseconds($ms)
+  while ((Get-Date) -lt $until) { Draw; Start-Sleep -Milliseconds 110 }
+}
+
 # ---- arm (on a clean alternate screen when fancy) ----------------------------
-if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); $global:inAlt = $true; Banner ($PT - 6); Put (At ($PT + 1) 5) }
+if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); $global:inAlt = $true; Banner ($PT - 7); Put (At ($PT + 1) 5) }
 $pin = Read-Host '   Arming code from Claude'
 
 $armBody = @{ code = $pin; host = $hostName; user = $userName; ps = $psv; elevated = $elevated } | ConvertTo-Json
@@ -1143,14 +1217,16 @@ if ($fancy) { Put ($E + '[2J'); Put ($E + '[?25l'); Draw } else { Plain "Armed o
 try {
   $running = $true
   while ($running) {
-    try {
-      $wr = Invoke-WebRequest "$base/x/$slug/poll?timeout=2" -Headers $hdr -TimeoutSec 10 -UseBasicParsing
-      $c = [System.Text.Encoding]::UTF8.GetString($wr.RawContentStream.ToArray()) | ConvertFrom-Json
-      $conn = 'connected'
-    } catch {
-      if ($_.Exception.Response.StatusCode.value__ -eq 401) { $conn = 'ended'; break }
-      $conn = 'reconnecting'; if ($state -ne 'paused') { $state = 'waiting' }; Draw; Start-Sleep -Milliseconds 800; continue
+    # A long server-side wait is fine now that it no longer freezes the redraw.
+    $pr = Get-Async "$base/x/$slug/poll?timeout=20" $hdr 40
+    if (-not $pr.ok) {
+      if ($pr.code -eq 401) { $conn = 'ended'; break }
+      $conn = 'reconnecting'; if ($state -ne 'paused') { $state = 'waiting' }
+      Idle 800
+      continue
     }
+    $conn = 'connected'
+    $c = $pr.text | ConvertFrom-Json
 
     if ($c.stop) {
       # Do not tear down: hold a revivable pause so the owner can pick this
@@ -1159,13 +1235,11 @@ try {
       $state = 'paused'; $conn = 'connected'; $pauseEnd = (Get-Date).AddSeconds($PAUSE)
       $revived = $false
       while ((Get-Date) -lt $pauseEnd) {
-        Draw; Start-Sleep -Milliseconds 200
-        try {
-          $pg = Invoke-RestMethod "$base/x/$slug/ping" -Headers $hdr -TimeoutSec 6 -UseBasicParsing
-          if (-not $pg.stopped) { $revived = $true; break }
-        } catch {
-          if ($_.Exception.Response.StatusCode.value__ -eq 401) { break }
-        }
+        $pg = Get-Async "$base/x/$slug/ping" $hdr 6
+        if ($pg.ok) {
+          if (-not (($pg.text | ConvertFrom-Json).stopped)) { $revived = $true; break }
+        } elseif ($pg.code -eq 401) { break }
+        Idle 900
       }
       if ($revived) { $state = 'waiting'; $conn = 'connected'; $lastLine = 'revived'; $lastCol = 40; Draw; continue }
       break

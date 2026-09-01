@@ -451,36 +451,61 @@ export function plainText(s: string): string {
  * of the two wins. Read-only verbs (Get-, Test-, Measure-) are deliberately not
  * here; holding those would train the reader to approve without looking.
  */
-const RISKY_PATTERNS: RegExp[] = [
-  /\bRemove-Item(Property)?\b/i,
-  /\bClear-(Content|Disk|EventLog|RecycleBin)\b/i,
-  /\b(Stop|Restart|Set)-Service\b/i,
-  /\bStop-Process\b/i,
-  /\b(Stop|Restart)-Computer\b/i,
-  /\b(Set|New)-ItemProperty\b/i,
-  /HKLM:|HKEY_LOCAL_MACHINE/i,
-  /\breg(\.exe)?\s+(add|delete|import)\b/i,
-  /\bgpupdate\b/i,
-  /\bmsiexec\b/i,
-  /\bUninstall-\w+/i,
-  /\bSet-ExecutionPolicy\b/i,
-  /\bshutdown(\.exe)?\b/i,
-  /\bdiskpart\b/i,
-  /\bformat\s+[a-z]:/i,
-  /\b(New-LocalUser|Add-LocalGroupMember|Remove-LocalUser)\b/i,
-  /\bnet\s+(user|localgroup)\b/i,
-  /\b(takeown|icacls)\b/i,
-  /\b(Disable|Enable)-(Service|WindowsOptionalFeature|NetAdapter|ScheduledTask|LocalUser)\b/i,
-  /\b(Set-Content|Out-File)\b/i,
-  /\b(rd|rmdir)\s+\/s\b/i,
-  /\bdel\s+\/[qsf]/i,
-  /\bStart-Process\b[^\n]*-Verb\s+RunAs/i,
-  /\bInvoke-Expression\b/i,
+/**
+ * Each rule carries the words shown to whoever has to decide, and to the caller
+ * that posted it. A bare pattern list could say a command was held but never why,
+ * which read from the outside like a hung agent.
+ */
+const RISKY_RULES: { label: string; re: RegExp }[] = [
+  { label: 'deletes items or registry values', re: /\bRemove-Item(Property)?\b/i },
+  { label: 'clears content, a disk, an event log or the recycle bin', re: /\bClear-(Content|Disk|EventLog|RecycleBin)\b/i },
+  { label: 'stops, restarts or reconfigures a service', re: /\b(Stop|Restart|Set)-Service\b/i },
+  { label: 'kills a process', re: /\bStop-Process\b/i },
+  { label: 'shuts down or restarts the machine', re: /\b(Stop|Restart)-Computer\b/i },
+  { label: 'writes a registry value', re: /\b(Set|New)-ItemProperty\b/i },
+  { label: 'adds, deletes or imports registry keys with reg.exe', re: /\breg(\.exe)?\s+(add|delete|import)\b/i },
+  { label: 'writes to the registry through .NET', re: /\bRegistry[^\]]*\]::(Set|Delete|Create)/i },
+  { label: 'reapplies group policy', re: /\bgpupdate\b/i },
+  { label: 'installs or removes software with msiexec', re: /\bmsiexec\b/i },
+  { label: 'uninstalls something', re: /\bUninstall-\w+/i },
+  { label: 'changes the PowerShell execution policy', re: /\bSet-ExecutionPolicy\b/i },
+  { label: 'shuts the machine down', re: /\bshutdown(\.exe)?\b/i },
+  { label: 'repartitions a disk', re: /\bdiskpart\b/i },
+  { label: 'formats a drive', re: /\bformat\s+[a-z]:/i },
+  { label: 'changes local users or groups', re: /\b(New-LocalUser|Add-LocalGroupMember|Remove-LocalUser)\b/i },
+  { label: 'changes local users or groups with net.exe', re: /\bnet\s+(user|localgroup)\b/i },
+  { label: 'takes ownership or rewrites permissions', re: /\b(takeown|icacls)\b/i },
+  { label: 'enables or disables a system feature', re: /\b(Disable|Enable)-(Service|WindowsOptionalFeature|NetAdapter|ScheduledTask|LocalUser)\b/i },
+  { label: 'writes a file', re: /\b(Set-Content|Out-File)\b/i },
+  { label: 'recursively deletes a directory', re: /\b(rd|rmdir)\s+\/s\b/i },
+  { label: 'force-deletes files', re: /\bdel\s+\/[qsf]/i },
+  { label: 'relaunches elevated', re: /\bStart-Process\b[^\n]*-Verb\s+RunAs/i },
+  { label: 'executes a constructed string', re: /\bInvoke-Expression\b/i },
 ];
+
+/** Anything in a command that would actually change the registry. */
+const REGISTRY_WRITE =
+  /\b(New|Set|Remove|Clear|Rename|Copy|Move)-Item(Property)?\b|\breg(\.exe)?\s+(add|delete|import)\b|\bRegistry[^\]]*\]::(Set|Delete|Create)/i;
+
+/**
+ * Why this command needs a human decision, or null if it does not.
+ *
+ * Naming an HKLM path is NOT on its own a reason: a read-only query like
+ * `Get-ChildItem HKLM:\SOFTWARE` used to be held, which from the caller's side
+ * was indistinguishable from a dead agent. The hive only counts when the command
+ * also carries something that writes.
+ */
+export function riskReason(body: string): string | null {
+  for (const rule of RISKY_RULES) if (rule.re.test(body)) return rule.label;
+  if (/(HKLM:|HKEY_LOCAL_MACHINE)/i.test(body) && REGISTRY_WRITE.test(body)) {
+    return 'writes to HKLM, the machine-wide registry';
+  }
+  return null;
+}
 
 /** True when the command text alone is enough to warrant a human decision. */
 export function looksRisky(body: string): boolean {
-  return RISKY_PATTERNS.some((re) => re.test(body));
+  return riskReason(body) !== null;
 }
 
 export interface ActionMeta {

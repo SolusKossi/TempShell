@@ -82,7 +82,9 @@ target it reported, so you learn the shell version and whether it is elevated
 *before* your first command. If `target.elevated` is false, say so: admin-only checks
 will fail, and offer to have the agent re-run in an elevated window. The
 arming code lasts **15 minutes**; if it lapses before they arm, `POST .../autorun`
-again for a fresh one.
+again for a fresh one. You do not have to guess how much is left:
+`POST .../autorun` returns `arming_expires_in_seconds`, and `GET .../autorun` keeps
+reporting it until the agent arms (then it is null).
 
 ### 4. Say what you are doing, every time
 
@@ -109,6 +111,24 @@ printf '%s' 'Restart-Service W32Time -Force' \
       --why "It is stopped, and that blocks Intune enrolment" \
       --risk risky
 ```
+
+**The server classifies risk itself, so a command can be held even when you did not
+flag it.** Your `--risk risky` can only escalate; it can never clear a command the
+server considers risky. The rules cover writes, deletes, service changes, registry
+writes, user/permission changes and a few others. Reading the registry
+(`Get-ChildItem HKLM:\SOFTWARE`, `reg query`) is **not** risky and runs normally.
+
+Because of that, always read the post response rather than assuming a command is on
+its way. When it is held you get the reason back:
+
+```json
+{"seq": 14, "approval": "pending", "risk_reason": "writes to HKLM, the machine-wide registry"}
+```
+
+`tempshell-run.sh` prints that to stderr the moment it posts, as
+`seq 14 is HELD FOR APPROVAL - <reason>`, or `posted seq N, waiting...` otherwise.
+**Relay a held command to the user immediately** and say what needs approving. A held
+command looks exactly like a hung agent if you say nothing and just keep waiting.
 
 The post response tells you which happened: `"approval":"pending"` means it is
 waiting on a human; `null` means it is already on its way. Nothing self-approves,
@@ -146,6 +166,12 @@ printf '%s' 'Get-ChildItem "C:\Program Files" | Select-Object Name' \
 Run it **as a background task**: you are re-invoked the moment the result lands, so
 you never stop and wait to be told it finished. If it prints `"gave_up":true` (30
 min), check in. Auto-run replies are tagged `author: "auto"`.
+
+**That notification is the only signal you need: do not poll the output file.** The
+file stays empty until the command finishes, so polling it tells you nothing and just
+burns turns. Progress goes to stderr instead: `posted seq N, waiting...` right after
+the post, or `seq N is HELD FOR APPROVAL - <reason>` if a human has to decide first.
+While you wait, either say what you are waiting on, or do other useful work.
 
 **Pull one value out with `--field` instead of printing the whole reply.** Takes a
 dotted path into the reply JSON and prints just that, so a 100 KB result costs you
@@ -442,4 +468,5 @@ and serial numbers.
 
 `quick` is right for moving a string between your own devices without a session: a
 path, a connection string, a URL to open on a phone. It syncs live to
-every device with the page open.
+every device with the page open. `PUT` takes either raw `text/plain` or
+`{"body":"..."}` as JSON; anything else comes back as a 400 saying which it wanted.

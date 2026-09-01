@@ -140,6 +140,26 @@ if [ -z "$SEQ" ]; then
     "$HTTP" "$(printf '%s' "$POST" | head -c 300 | tr -d '\n')"; exit 1
 fi
 
+# --- say what just happened, on stderr ---------------------------------------
+# stdout stays pure JSON for the caller. Without this the output stayed empty
+# until the command finished, so "queued", "running", "held for approval" and
+# "the agent died" were indistinguishable, and a held command read as a hang.
+if [ "$have_node" = 1 ]; then
+  APPROVAL="$(printf '%s' "$POST" | node -pe "try{JSON.parse(require('fs').readFileSync(0)).approval||''}catch(e){''}" 2>/dev/null || true)"
+  REASON="$(printf '%s' "$POST" | node -pe "try{JSON.parse(require('fs').readFileSync(0)).risk_reason||''}catch(e){''}" 2>/dev/null || true)"
+else
+  APPROVAL="$(printf '%s' "$POST" | grep -o '"approval":"[a-z]*"' | head -1 | sed 's/.*:"//;s/"//' || true)"
+  REASON="$(printf '%s' "$POST" | grep -o '"risk_reason":"[^"]*"' | head -1 | sed 's/.*:"//;s/"$//' || true)"
+fi
+
+if [ "$APPROVAL" = "pending" ]; then
+  echo "tempshell: seq $SEQ is HELD FOR APPROVAL - ${REASON:-flagged as risky}" >&2
+  echo "  Nothing is stuck. Someone at the machine must press Approve at $BASE/s/$SLUG" >&2
+  echo "  Tell the user that now, and do not re-post the command." >&2
+else
+  echo "tempshell: posted seq $SEQ, waiting for the result..." >&2
+fi
+
 # --- wait for the entry that answers THIS command ----------------------------
 SINCE="$SEQ"
 END=$(( $(date +%s) + 1800 ))
