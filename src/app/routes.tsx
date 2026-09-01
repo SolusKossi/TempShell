@@ -1037,13 +1037,7 @@ function Draw {
   BoxRow ($PT + 2) 'session' $title 250 $bcol
   BoxRule ($PT + 3) $bcol
 
-  # A breathing dot for the status line: not the top-border spinner (a shape
-  # cycle) and not the working row (knight-rider), just a filled dot pulsing
-  # through the purples, so "alive" reads distinctly from "working".
-  $pulse = @(53,54,55,92,98,141,183,141,98,92,55,54)
-  $pdot = (Col $pulse[$global:frame % $pulse.Count]) + ([char]0x25CF)
-  $stTxt = "$pdot" + (Col $st[1]) + " $($st[0])"; if ($state -eq 'stopped') { $stTxt = $st[0] }
-  BoxRow ($PT + 4) 'status' $stTxt $st[1] $bcol
+  BoxRow ($PT + 4) 'status' $st[0] $st[1] $bcol
 
   # The human status line: what this step is doing, from the web side. Brighter
   # for a beat when it changes, and tinted amber while a risky step runs.

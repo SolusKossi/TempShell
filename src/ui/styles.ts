@@ -5,23 +5,23 @@
  */
 export const styles = `
 :root {
-  --bg: #121215;
-  --panel: #191920;
-  --panel-2: #202028;
-  --panel-3: #272730;
-  --border: #2b2b35;
-  --border-strong: #3b3b47;
-  --fg: #ebebf0;
-  --fg-dim: #a6a6b4;
-  --muted: #71717f;
-  --accent: #7d5fc9;
-  --accent-hi: #9179db;
-  --accent-soft: rgba(125, 95, 201, 0.15);
-  --ok: #56b088;
-  --warn: #cf9a4e;
-  --danger: #d46b6b;
-  --r: 10px;
-  --r-sm: 7px;
+  --bg: #0d0d12;
+  --panel: #15151c;
+  --panel-2: #1d1d26;
+  --panel-3: #25252f;
+  --border: #2a2a36;
+  --border-strong: #3a3a48;
+  --fg: #e8e8f2;
+  --fg-dim: #a6a6b8;
+  --muted: #6f6f80;
+  --accent: #8a6fd6;
+  --accent-hi: #b79ff0;
+  --accent-soft: rgba(138, 111, 214, 0.16);
+  --ok: #5bc08f;
+  --warn: #d3a05a;
+  --danger: #e07070;
+  --r: 6px;
+  --r-sm: 4px;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
@@ -33,30 +33,47 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--sans);
-  font-size: 15px;
+  font-family: var(--mono);
+  font-size: 14px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+}
+/* Faint scanlines: a shell running on a CRT, not a marketing site. Very low
+   contrast so it is texture, never stripes; sits above content but ignores the
+   pointer so nothing below it stops being clickable. */
+body::after {
+  content: ''; position: fixed; inset: 0; z-index: 90; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,0.13) 0 1px, transparent 1px 3px);
+  opacity: 0.5;
 }
 
 /* ------------------------------------------------------------- topbar --- */
 
 .topbar {
   position: sticky; top: 0; z-index: 20;
-  background: rgba(18, 18, 21, 0.86);
+  background: rgba(13, 13, 18, 0.9);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-strong);
 }
 .topbar-inner {
   max-width: 900px; margin: 0 auto; padding: 0 18px;
   height: 56px; display: flex; align-items: center; gap: 14px;
 }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; color: var(--fg); }
+.brand { display: flex; align-items: baseline; gap: 8px; font-weight: 600; font-size: 15px; color: var(--fg); letter-spacing: 0.01em; }
 .brand:hover { text-decoration: none; }
+/* The logo image becomes a shell prompt glyph, so the wordmark reads tempshell~$ */
 .mark {
-  width: 26px; height: 26px; flex: 0 0 auto;
-  background: url("/logo.png") center / contain no-repeat;
+  width: auto; height: auto; flex: 0 0 auto; background: none;
+  color: var(--accent-hi); font-weight: 700;
 }
+.mark::before { content: "¾F"; }  /* heavy prompt arrow */
+/* A block cursor blinking after the wordmark. */
+.brand::after {
+  content: ''; width: 8px; height: 15px; margin-left: 2px; align-self: center;
+  background: var(--accent-hi); border-radius: 1px;
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+@keyframes cursor-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 .brand .where { color: var(--muted); font-weight: 450; }
 .nav { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 
@@ -70,10 +87,12 @@ body {
 }
 .section-head:first-child { margin-top: 6px; }
 .section-head h2 {
-  font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--muted); font-weight: 600; margin: 0;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--accent-hi); font-weight: 600; margin: 0;
 }
-.section-head .rule { flex: 1; height: 1px; background: var(--border); }
+.section-head h2::before { content: "// "; color: var(--muted); }
+.section-head .rule { flex: 1; height: 1px;
+  background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
 
 a { color: var(--accent-hi); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -96,7 +115,7 @@ textarea, input[type=text], input[type=password], input[type=tel] {
   resize: none;          /* no drag handle; textareas grow to fit instead */
   overflow: hidden;
 }
-textarea::placeholder, input::placeholder { color: var(--muted); font-family: var(--sans); }
+textarea::placeholder, input::placeholder { color: var(--muted); font-family: var(--mono); }
 textarea:focus, input:focus {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -109,7 +128,7 @@ button, .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   padding: 9px 15px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); background: var(--panel-2);
-  color: var(--fg); font-family: var(--sans); font-size: 14px;
+  color: var(--fg); font-family: var(--mono); font-size: 13px;
   font-weight: 500; cursor: pointer; white-space: nowrap;
   transition: background 0.13s, border-color 0.13s, transform 0.06s;
 }
@@ -619,4 +638,36 @@ button:active, .btn:active { transform: translateY(1px) scale(0.99); }
 
 /* Riskflag and status pills settle in. */
 .riskflag { animation: cb-in 0.3s ease-out both; }
+
+/* ---------------------------------------------------- shell flourishes --- */
+
+/* Every log line opens with a prompt, so the activity feed reads like a shell
+   session scrolling past rather than a list of cards. */
+.act-head { position: relative; padding-left: 15px; }
+.act-head::before {
+  content: "¾F"; position: absolute; left: 0; top: 0;
+  color: var(--accent-hi); font-weight: 700; opacity: 0.7;
+}
+
+/* The status card gets terminal corner brackets, top-left and bottom-right. */
+.statuscard { position: relative; }
+.statuscard::before, .statuscard::after {
+  content: ''; position: absolute; width: 9px; height: 9px;
+  border-color: var(--accent); border-style: solid; opacity: 0.55; pointer-events: none;
+}
+.statuscard::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+.statuscard::after  { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+.statuscard.live::before, .statuscard.live::after { border-color: var(--ok); opacity: 0.7; }
+.statuscard .sc-title { font-weight: 600; font-size: 14px; }
+.statuscard .sc-title::before { content: "¾F "; color: var(--accent-hi); }
+.statuscard.done .sc-title::before { content: "¹4 "; color: var(--ok); }
+.statuscard.inactive .sc-title::before { content: " D7 "; color: var(--muted); }
+
+/* A code block gets a faux title bar with three dots, like a terminal window. */
+.codeblock { position: relative; }
+
+/* Section rule dashes and the blinking cursor already carry the motion; keep the
+   panels flat and sharp so the whole thing reads as one shell surface. */
+.panel, .session-card, .act, .codeblock { border-radius: var(--r-sm); }
+.pill-code { letter-spacing: 0.22em; }
 `;
