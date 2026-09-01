@@ -592,11 +592,37 @@ function patchList(container, html) {
       if (!firstPaint) node.classList.add('entering');
       if (prev) prev.after(node);
       else container.prepend(node);
-      if (!firstPaint) setTimeout(() => node.classList.remove('entering'), 2200);
+      if (!firstPaint) {
+        setTimeout(() => node.classList.remove('entering'), 2200);
+        const st = node.querySelector('[data-stat]');
+        if (st) typeStat(st, st.textContent);
+      }
       prev = node;
     }
   }
   existing.forEach((n) => n.remove());
+}
+
+// Type a status label in behind a block cursor, so a badge changing (queued ->
+// running -> ok) reads like output being printed. The final width is reserved
+// up front so the pill does not jump as characters land.
+function typeStat(el, text) {
+  if (el._typeIv) { clearInterval(el._typeIv); el._typeIv = null; }
+  el.dataset.text = text;
+  el.textContent = text;
+  el.style.minWidth = el.offsetWidth + 'px';
+  el.textContent = '';
+  el.classList.add('typing');
+  let i = 0;
+  el._typeIv = setInterval(() => {
+    i++;
+    el.textContent = text.slice(0, i);
+    if (i >= text.length) {
+      clearInterval(el._typeIv);
+      el._typeIv = null;
+      setTimeout(() => el.classList.remove('typing'), 420);
+    }
+  }, 55);
 }
 
 // Update a card in place rather than replacing it, so a finishing command does
@@ -608,12 +634,11 @@ function updateCard(oldSlot, newSlot) {
 
   const oldStat = a.querySelector('[data-stat]');
   const newStat = b.querySelector('[data-stat]');
-  if (oldStat && newStat && oldStat.textContent !== newStat.textContent) {
+  // Compare against the type target, not the partially-typed text, so a poll
+  // landing mid-animation does not restart it.
+  if (oldStat && newStat && (oldStat.dataset.text || oldStat.textContent) !== newStat.textContent) {
     oldStat.className = newStat.className;
-    oldStat.textContent = newStat.textContent;
-    oldStat.classList.remove('flip');
-    void oldStat.offsetWidth;
-    oldStat.classList.add('flip');
+    typeStat(oldStat, newStat.textContent);
   }
   const oldDur = a.querySelector('[data-dur]');
   const newDur = b.querySelector('[data-dur]');

@@ -273,10 +273,15 @@ body.dropping { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .rstat.run  { background: var(--accent-soft); color: var(--accent-hi); }
 .rstat.idle { background: var(--panel-3); color: var(--muted); }
 
-/* Neutral placeholder while the terminal-style status animation is being chosen
-   from the review screen: a quick fade-in, nothing shiny. */
-.rstat.flip { animation: stat-fade 0.25s ease-out both; }
-@keyframes stat-fade { from { opacity: 0.35; } to { opacity: 1; } }
+/* Status changes type the new label in behind a blinking block cursor (driven
+   by typeStat in the session script), so a badge resolving reads like a line of
+   output being printed. This is just the cursor; the typing itself is JS. */
+.rstat.typing::after {
+  content: ""; display: inline-block; width: 5px; height: 10px; margin-left: 2px;
+  background: currentColor; vertical-align: -1px;
+  animation: stat-cursor 0.85s steps(1) infinite;
+}
+@keyframes stat-cursor { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 
 /* Click anywhere on a step to open it. */
 .act.expandable { cursor: pointer; }
