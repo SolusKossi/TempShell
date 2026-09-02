@@ -730,7 +730,8 @@ function executorAuth(c: Context, session: store.Session): store.Executor | null
 app.post('/x/:slug/arm', async (c) => {
   const session = store.getSession(c.req.param('slug'));
   if (!session || !session.auto_enabled) return c.json({ error: 'not available' }, 404);
-  if (!rateLimit(`arm:${clientIp(c)}:${session.id}`, 5, 600_000) || !joinBudgetAvailable()) {
+  // A check only: the budget is spent further down, and only on a wrong code.
+  if (rateLimited(`arm:${clientIp(c)}:${session.id}`, 5) || !joinBudgetAvailable()) {
     return c.json({ error: 'too many attempts' }, 429);
   }
   const parsed = await safeJson<{ code?: string; host?: string; user?: string; ps?: string; elevated?: boolean }>(c);
@@ -742,8 +743,18 @@ app.post('/x/:slug/arm', async (c) => {
     elevated: parsed.elevated,
   });
   if (!token) {
+    // Say which it was. A wrong code can be retyped; an expired one needs
+    // Claude to mint a fresh one, and the person at the machine cannot tell
+    // the two apart from one combined message. Only a real guess counts
+    // against the limiters: retrying an expired code is not brute force.
+    const ex = store.getExecutor(session.id);
+    if (!ex || !ex.arm_hash) return c.json({ error: 'no arming code is active - ask Claude for a fresh one' }, 410);
+    if (ex.arm_expires && ex.arm_expires < Date.now()) {
+      return c.json({ error: 'arming code expired - ask Claude for a fresh one' }, 410);
+    }
+    rateLimit(`arm:${clientIp(c)}:${session.id}`, 5, 600_000);
     recordWrongGuess();
-    return c.json({ error: 'wrong or expired arming code' }, 401);
+    return c.json({ error: 'wrong arming code - check the digits and try again' }, 401);
   }
   return c.json({ ok: true, token });
 });
@@ -1263,7 +1274,11 @@ try {
 } catch {
   $global:said = $true
   if ($fancy -and $global:inAlt) { Put ($E + '[?1049l'); Put ($E + '[?25h') }
-  Write-Host '   Arming failed - wrong or expired code.' -ForegroundColor Red
+  # The server says whether the code was wrong (retype it) or expired (ask for
+  # a fresh one); show that rather than a guess that lumps both together.
+  $why = 'wrong or expired code'
+  try { $m = ($_.ErrorDetails.Message | ConvertFrom-Json).error; if ($m) { $why = $m } } catch {}
+  Write-Host ('   Arming failed - ' + $why) -ForegroundColor Red
   return
 }
 $tok = $armed.token
