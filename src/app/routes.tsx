@@ -1078,7 +1078,10 @@ function Draw {
   # for a beat when it changes, and tinted amber while a risky step runs.
   $dcol = 253; if ($global:flash -gt 0) { $dcol = 231; $global:flash-- } elseif ($state -ne 'running') { $dcol = 250 }
   if ($state -eq 'running' -and $curRisk -eq 'risky') { $dcol = 214 }
-  BoxRow ($PT + 5) 'doing' $curIntent $dcol $bcol
+  # "doing" only while a command runs. Between commands the row keeps the last
+  # step but is labelled "previous", so a finished task never reads as in progress.
+  $dlab = 'doing'; if ($state -ne 'running' -and $curIntent -ne '-') { $dlab = 'previous' }
+  BoxRow ($PT + 5) $dlab $curIntent $dcol $bcol
   BoxRow ($PT + 6) 'why' $curWhy 244 $bcol
   BoxRule ($PT + 7) $bcol
 
