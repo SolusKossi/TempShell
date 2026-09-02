@@ -89,7 +89,9 @@ target it reported, so you learn the shell version and whether it is elevated
 *before* your first command. If `target.elevated` is false, say so: admin-only checks
 will fail, and offer to have the agent re-run in an elevated window. The
 arming code lasts **15 minutes**; if it lapses before they arm, `POST .../autorun`
-again for a fresh one. You do not have to guess how much is left:
+again for a fresh one. If it has already lapsed, the agent says so in plain words
+("arming code expired - ask Claude for a fresh one"), distinct from a mistyped code, so
+relay a fresh one rather than telling them to retype. You do not have to guess how much is left:
 `POST .../autorun` returns `arming_expires_in_seconds`, and `GET .../autorun` keeps
 reporting it until the agent arms (then it is null).
 
@@ -469,7 +471,7 @@ and serial numbers.
 | | |
 |---|---|
 | `GET /api/sessions` | All sessions, each with a `pending` count |
-| `GET /api/sessions/$SLUG` | The whole thread (add `?compact=1` to drop duplicated bodies) |
+| `GET /api/sessions/$SLUG` | The whole thread (add `?compact=1` to drop duplicated bodies); also `status` (live / arming / inactive), `outcome` and `outcome_note` |
 | `DELETE /api/sessions/$SLUG` | Remove a session and its history |
 | `GET` / `PUT /api/quick` | The quick paste box on the TempShell home page |
 
