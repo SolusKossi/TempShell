@@ -14,7 +14,7 @@ server.get('/healthz', (c) => c.text('ok'));
 
 // Brand assets, read once at boot and cached hard.
 const assets = new Map<string, Uint8Array>();
-for (const name of ['logo.png', 'favicon.png', 'favicon-32.png']) {
+for (const name of ['logo.png', 'favicon.png', 'favicon-32.png', 'mark.png']) {
   try {
     assets.set(name, new Uint8Array(readFileSync(`./assets/${name}`)));
   } catch (error) {
@@ -36,6 +36,7 @@ function asset(name: string): Response {
 server.get('/logo.png', () => asset('logo.png'));
 server.get('/favicon.png', () => asset('favicon.png'));
 server.get('/favicon-32.png', () => asset('favicon-32.png'));
+server.get('/mark.png', () => asset('mark.png'));
 server.get('/favicon.ico', () => asset('favicon-32.png'));
 server.get('/apple-touch-icon.png', () => asset('logo.png'));
 server.get('/apple-touch-icon-precomposed.png', () => asset('logo.png'));

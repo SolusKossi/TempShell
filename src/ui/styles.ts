@@ -59,14 +59,14 @@ body::after {
   max-width: 900px; margin: 0 auto; padding: 0 18px;
   height: 56px; display: flex; align-items: center; gap: 14px;
 }
-.brand { display: flex; align-items: baseline; gap: 8px; font-weight: 600; font-size: 15px; color: var(--fg); letter-spacing: 0.01em; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; color: var(--fg); letter-spacing: 0.01em; }
 .brand:hover { text-decoration: none; }
-/* The logo image becomes a shell prompt glyph, so the wordmark reads tempshell~$ */
+/* The chevron mark, transparent (the tiled version is only for the favicon,
+   where it has to survive a light tab bar). */
 .mark {
-  width: auto; height: auto; flex: 0 0 auto; background: none;
-  color: var(--accent-hi); font-weight: 700;
+  width: 26px; height: 26px; flex: 0 0 auto;
+  background: url("/mark.png") center / contain no-repeat;
 }
-.mark::before { content: "❯"; }  /* heavy prompt arrow */
 .brand .where { color: var(--muted); font-weight: 450; }
 .nav { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 
