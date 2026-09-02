@@ -182,6 +182,12 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
   return true;
 }
 
+/** True when the key is already over its limit. A check only: nothing is consumed. */
+export function rateLimited(key: string, limit: number): boolean {
+  const entry = attempts.get(key);
+  return !!entry && entry.resetAt >= Date.now() && entry.count >= limit;
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of attempts) if (entry.resetAt < now) attempts.delete(key);

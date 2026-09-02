@@ -11,6 +11,7 @@ import {
   hasJoined,
   joinBudgetAvailable,
   rateLimit,
+  rateLimited,
   recordWrongGuess,
   revokeSession,
 } from '../auth.ts';
@@ -145,11 +146,14 @@ app.post('/accounts/:id/delete', (c) => {
 // and just bounces to the landing page; this grants the cookie and lands them in.
 // Same secret as the code box (four digits), so the same per-IP limit applies.
 app.get('/j/:code', (c) => {
-  if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
+  if (rateLimited(`join:${clientIp(c)}`, 6) || !joinBudgetAvailable()) {
     return c.html(JoinPage('Too many attempts. Try again later.'), 429);
   }
   const session = store.getSessionByCode(String(c.req.param('code')).replace(/\D/g, '').slice(0, 4));
   if (!session) {
+    // Only a wrong guess spends the per-IP budget: a correct code must never lock
+    // anyone out, or one tester (or a shared office NAT) blocks everyone behind it.
+    rateLimit(`join:${clientIp(c)}`, 6, 900_000);
     recordWrongGuess();
     return c.html(JoinPage('That code did not match a session.'), 404);
   }
@@ -159,7 +163,7 @@ app.get('/j/:code', (c) => {
 
 app.post('/join', async (c) => {
   // Four digits is only 9000 options, so guessing is limited per IP and globally.
-  if (!rateLimit(`join:${clientIp(c)}`, 6, 900_000) || !joinBudgetAvailable()) {
+  if (rateLimited(`join:${clientIp(c)}`, 6) || !joinBudgetAvailable()) {
     return c.html(JoinPage('Too many attempts. Try again later.'), 429);
   }
   const form = await c.req.parseBody();
@@ -168,6 +172,9 @@ app.post('/join', async (c) => {
   const code = String(form.code ?? '').replace(/\D/g, '').slice(0, 4);
   const session = store.getSessionByCode(code);
   if (!session) {
+    // Only a wrong guess spends the per-IP budget: a correct code must never lock
+    // anyone out, or one tester (or a shared office NAT) blocks everyone behind it.
+    rateLimit(`join:${clientIp(c)}`, 6, 900_000);
     recordWrongGuess();
     return c.html(JoinPage('No session with that code.'), 404);
   }
