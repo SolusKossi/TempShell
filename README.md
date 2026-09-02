@@ -8,11 +8,10 @@ with a plain note on every action and a human gate in front of anything risky.
 Good for troubleshooting a test PC, a colleague's laptop, or a locked-down work
 machine, without RDP, an install, or reading commands down the phone.
 
-<!--
-  A short screen recording belongs here. It is the most useful thing on this page.
-  GitHub renders an uploaded .mp4 as a player, so no GIF is needed: drag one into
-  a comment or the README editor and paste the URL it gives you.
--->
+
+https://github.com/user-attachments/assets/3f86498e-153f-4896-9595-642c4e61ba40
+
+
 
 ## How you use it
 
