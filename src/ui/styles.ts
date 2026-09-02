@@ -66,7 +66,7 @@ body::after {
    brand text's cap height, like the text glyph it replaced, and hugs the
    glyph's portrait aspect so there is no empty box around it. */
 .mark {
-  width: 0.6em; height: 0.85em; flex: 0 0 auto;
+  width: 0.7em; height: 1em; flex: 0 0 auto;
   background: url("/mark.png") center / contain no-repeat;
 }
 .brand .where { color: var(--muted); font-weight: 450; }
@@ -630,10 +630,11 @@ button:active, .btn:active { transform: translateY(1px) scale(0.99); }
 
 /* Every log line opens with a prompt, so the activity feed reads like a shell
    session scrolling past rather than a list of cards. */
-.act-head { position: relative; padding-left: 15px; }
+.act-head { position: relative; padding-left: 1.3em; }
 .act-head::before {
-  content: "❯"; position: absolute; left: 0; top: 0;
-  color: var(--accent-hi); font-weight: 700; opacity: 0.7;
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 0.7em; height: 1em; opacity: 0.85;
+  background: url("/mark.png") center / contain no-repeat;
 }
 
 /* The status card gets terminal corner brackets, top-left and bottom-right. */
@@ -646,7 +647,15 @@ button:active, .btn:active { transform: translateY(1px) scale(0.99); }
 .statuscard::after  { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
 .statuscard.live::before, .statuscard.live::after { border-color: var(--ok); opacity: 0.7; }
 .statuscard .sc-title { font-weight: 600; font-size: 14px; }
-.statuscard .sc-title::before { content: "❯ "; color: var(--accent-hi); }
+.statuscard .sc-title::before {
+  content: ""; display: inline-block; width: 0.7em; height: 1em; margin-right: 0.45em;
+  vertical-align: -0.12em; background: url("/mark.png") center / contain no-repeat;
+}
+/* done / inactive show a state glyph instead of the chevron, so undo the image box */
+.statuscard.done .sc-title::before,
+.statuscard.inactive .sc-title::before {
+  background: none; width: auto; height: auto; display: inline; margin: 0; vertical-align: baseline;
+}
 .statuscard.done .sc-title::before { content: "✔ "; color: var(--ok); }
 .statuscard.inactive .sc-title::before { content: "× "; color: var(--muted); }
 
