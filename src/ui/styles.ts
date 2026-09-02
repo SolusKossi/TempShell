@@ -62,9 +62,11 @@ body::after {
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; color: var(--fg); letter-spacing: 0.01em; }
 .brand:hover { text-decoration: none; }
 /* The chevron mark, transparent (the tiled version is only for the favicon,
-   where it has to survive a light tab bar). */
+   where it has to survive a light tab bar). Sized in em so it sits at the
+   brand text's cap height, like the text glyph it replaced, and hugs the
+   glyph's portrait aspect so there is no empty box around it. */
 .mark {
-  width: 26px; height: 26px; flex: 0 0 auto;
+  width: 0.6em; height: 0.85em; flex: 0 0 auto;
   background: url("/mark.png") center / contain no-repeat;
 }
 .brand .where { color: var(--muted); font-weight: 450; }
