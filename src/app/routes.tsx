@@ -776,6 +776,17 @@ app.get('/x/:slug/ping', (c) => {
   return c.json({ stopped: Boolean(ex.stop) || !session.auto_enabled });
 });
 
+// The agent says goodbye on its way out (Ctrl+C, pause expiry), so the page
+// shows "not connected" immediately rather than after the heartbeat goes stale.
+app.post('/x/:slug/bye', (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const ex = executorAuth(c, session);
+  if (!ex) return c.json({ error: 'unauthorised' }, 401);
+  store.executorBye(session.id);
+  return c.json({ ok: true });
+});
+
 // Post a command's result back; mark that command done so it is never re-served.
 // Accepts the structured shape from the agent, and the old {output} for safety.
 app.post('/x/:slug/result', async (c) => {
@@ -1309,6 +1320,10 @@ try {
     Draw
   }
 } finally {
+  # Tell the server we are leaving, so the page flips to "not connected" now
+  # rather than after the poll heartbeat goes stale. Best effort: a dead server
+  # must not hold up the exit, and before arming there is nothing to tell.
+  if ($hdr) { try { Invoke-RestMethod "$base/x/$slug/bye" -Method Post -Headers $hdr -TimeoutSec 3 -UseBasicParsing | Out-Null } catch {} }
   Goodbye
 }
 }`;

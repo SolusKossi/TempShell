@@ -284,11 +284,14 @@ export function listSessions(owner: string, includeClosed = false): Session[] {
  * 'arming'   : auto-run on, waiting for the person to paste and arm the agent.
  * 'inactive' : the agent stopped, was disarmed, or its window was closed (its
  *              poll heartbeat went stale). A finished session lands here.
- * The live/stale line is the agent's last poll: it polls every couple of
- * seconds, so no poll for LIVE_WINDOW_MS means the window is gone.
+ * The live/stale line is the agent's last poll. It long-polls for up to ~20s,
+ * so LIVE_WINDOW_MS is a little over twice that: long enough to ride out a
+ * parked poll, short enough that a closed window or a crash reads as gone
+ * within a minute. A clean exit does not wait for this at all: the agent posts
+ * /bye on the way out and drops armed immediately.
  */
 export type SessionStatus = 'live' | 'arming' | 'inactive';
-const LIVE_WINDOW_MS = 90_000;
+const LIVE_WINDOW_MS = 45_000;
 
 export function sessionStatus(s: Session): SessionStatus {
   const ex = getExecutor(s.id);
@@ -800,6 +803,16 @@ export function executorBySession(sessionId: string, token: string): Executor | 
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   db.prepare('UPDATE executors SET last_seen = ? WHERE session_id = ?').run(Date.now(), sessionId);
   return ex;
+}
+
+/**
+ * The agent is leaving (Ctrl+C, or its pause ran out). Drop armed so the page
+ * flips to "not connected" at once instead of waiting for the poll heartbeat to
+ * go stale. Re-pasting a fresh agent re-arms it as usual.
+ */
+export function executorBye(sessionId: string): void {
+  db.prepare('UPDATE executors SET armed = 0 WHERE session_id = ?').run(sessionId);
+  bus.publish('sessions');
 }
 
 const CLAIM_TTL_MS = 90_000;
