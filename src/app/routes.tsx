@@ -390,6 +390,8 @@ api.get('/sessions', (c) =>
       slug: s.slug,
       title: s.title,
       code: s.code,
+      status: store.sessionStatus(s),
+      outcome: s.outcome ?? null,
       closed: Boolean(s.closed),
       updated_at: s.updated_at,
       url: `${config.publicUrl}/s/${s.slug}`,
@@ -421,6 +423,10 @@ api.get('/sessions/:slug', (c) => {
     slug: session.slug,
     title: session.title,
     code: session.code,
+    // Where the session stands, so a driving assistant need not scrape the page.
+    status: store.sessionStatus(session),
+    outcome: session.outcome ?? null,
+    outcome_note: session.outcome_note ?? null,
     url: `${config.publicUrl}/s/${session.slug}`,
     entries: store.listEntries(session.id).map((e) => toApiEntry(e, compact)),
   });

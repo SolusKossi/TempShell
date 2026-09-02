@@ -373,6 +373,10 @@ export function topSection(session: Session, view: SessionView, entries: Entry[]
   const noGate = view.autoApprove
     ? `<div class="noapproval">Approvals are off. Risky commands run without asking.</div>`
     : '';
+  // A finished task is finished whatever the agent is doing. The done card has
+  // to beat the arming setup, which otherwise hides it for a session completed
+  // while (re)waiting for an agent, and the live page polls this fragment.
+  if (session.outcome === 'done') return noGate + approvals + statusCard(session, view);
   if (view.status === 'arming') return noGate + approvals + setupCardHtml(session.slug);
   if (view.status === 'live') return noGate + approvals + statusCard(session, view);
   return noGate + approvals + statusCard(session, view) + setupCardHtml(session.slug);
