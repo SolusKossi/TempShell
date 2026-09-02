@@ -288,7 +288,7 @@ export function listSessions(owner: string, includeClosed = false): Session[] {
  * so LIVE_WINDOW_MS is a little over twice that: long enough to ride out a
  * parked poll, short enough that a closed window or a crash reads as gone
  * within a minute. A clean exit does not wait for this at all: the agent posts
- * /bye on the way out and drops armed immediately.
+ * /bye on the way out and is marked stopped immediately.
  */
 export type SessionStatus = 'live' | 'arming' | 'inactive';
 const LIVE_WINDOW_MS = 45_000;
@@ -806,12 +806,14 @@ export function executorBySession(sessionId: string, token: string): Executor | 
 }
 
 /**
- * The agent is leaving (Ctrl+C, or its pause ran out). Drop armed so the page
- * flips to "not connected" at once instead of waiting for the poll heartbeat to
- * go stale. Re-pasting a fresh agent re-arms it as usual.
+ * The agent is leaving (Ctrl+C, or its pause ran out). Mark it stopped, the same
+ * flag the page's Stop button sets, so sessionStatus reads 'inactive' and the
+ * page shows "not connected, paste again" at once rather than after the poll
+ * heartbeat goes stale. Not armed=0: that reads as "never armed" and shows the
+ * arming setup card instead. Re-arming clears stop as usual.
  */
 export function executorBye(sessionId: string): void {
-  db.prepare('UPDATE executors SET armed = 0 WHERE session_id = ?').run(sessionId);
+  db.prepare('UPDATE executors SET stop = 1 WHERE session_id = ?').run(sessionId);
   bus.publish('sessions');
 }
 
