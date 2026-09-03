@@ -405,11 +405,17 @@ printf '%s' 'while (...) { Start-Sleep 5 }' \
       --intent "Watch the service come up" --why "It restarts slowly after a reset"
 ```
 
-**A reboot kills the agent, and the code may lapse while the machine is down.** Mint
-the next arming code *before* the reboot with a longer window:
-`POST .../autorun?arming_ttl_seconds=1800` (60s to 30min). Relay it along with the
-reboot instruction, so the person can re-paste the moment they are back rather than
-waiting on you for a fresh code.
+**A reboot kills the agent.** Two ways to handle it, cheapest first:
+
+- *Mint a longer-lived code before the reboot* so they can re-paste when back:
+  `POST .../autorun?arming_ttl_seconds=1800` (60s to 30min). They still paste once.
+- *Reboot persistence (opt-in, one restart per call).* With the agent armed,
+  `POST .../autorun/persist`. The agent installs a logon entry that, after the next
+  restart, brings it back **armed with nothing to type**. It is a live unattended
+  shell that survives a reboot, so ask the user first, and it only spans one restart
+  (call persist again before a second one). The session page shows a banner while it
+  is armed; `GET .../autorun` reports `persist`. Turn it off with
+  `POST .../autorun/persist?off=1`.
 
 **PowerShell 5.1 traps that cost a real session:**
 
@@ -468,6 +474,31 @@ The result is console text, so shape it before it is printed.
 - **Check elevation up front.** Many Intune, service, and registry checks need an
   admin shell. If `target.elevated` is false and you need admin, ask for the agent
   to be re-armed elevated before you go deep.
+
+## Getting a file, or structured data, off the machine
+
+**A file back.** Command output is capped, so a database backup or a log will not fit
+through it. Post the path as an upload instead: the agent reads it and sends the bytes
+back, landing as a downloadable entry.
+
+```bash
+printf '%s' 'C:\Users\me\AppData\Local\app\data.db'   | bash ~/.claude/skills/tempshell-session/tempshell-run.sh $SLUG --kind upload       --intent "Back up the app database" --why "Before the reset, in case we need it"
+```
+
+The reply is a `kind: "file"` entry with a `file.id`; fetch it with
+`GET /api/files/<id>`. Cap is 25 MB; a missing, oversize, or folder path comes back as
+a normal error result, not a hang. (`--kind upload` posts `?kind=upload`; the body is
+the path.)
+
+**Structured data instead of text.** Most output-shaping pain is avoidable: add
+`--format json` and the agent returns `ConvertTo-Json` of the pipeline objects in
+`result.data` (parsed, alongside the usual `stdout`). Read fields directly instead of
+grepping console text.
+
+```bash
+printf '%s' 'Get-Service Spooler,W32Time | Select-Object Name,Status,StartType'   | bash ~/.claude/skills/tempshell-session/tempshell-run.sh $SLUG --format json       --intent "Service states" --why "Structured, so no text parsing"
+# reply: result.data -> [{ "Name": "Spooler", "Status": "Running", ... }, ...]
+```
 
 ## Screenshots
 

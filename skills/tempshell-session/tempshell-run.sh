@@ -32,6 +32,8 @@ tempshell-run.sh <slug> [command] [options]        (command on stdin is preferre
   --risk risky    hold the command until a human at the machine approves it
   --file PATH     read the command from a file instead of stdin or an argument
   --timeout N     seconds this command may run, 1-600 (default 120)
+  --kind upload   the body is a path on the target; the agent sends that file back
+  --format json   also return ConvertTo-Json of the output in result.data
   --field PATH    print only that value from the reply, e.g. result.status
   --quiet         status/exit/duration, then stdout, then stderr
   --dry-run       show how the step will appear on the page; posts nothing
@@ -80,7 +82,7 @@ fi
 
 # --intent / --why build the action log on the session page; --risk risky holds
 # the command until someone at the machine approves it.
-INTENT=""; WHY=""; RISK=""; POSCMD=""; QUIET=0; FIELD=""; DRYRUN=0; CMDFILE=""; TIMEOUT=""
+INTENT=""; WHY=""; RISK=""; POSCMD=""; QUIET=0; FIELD=""; DRYRUN=0; CMDFILE=""; TIMEOUT=""; KIND=""; FORMAT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --intent) INTENT="${2:-}"; shift 2 ;;
@@ -90,6 +92,8 @@ while [ $# -gt 0 ]; do
     --field)  FIELD="${2:-}";  shift 2 ;;
     --file)   CMDFILE="${2:-}"; shift 2 ;;
     --timeout) TIMEOUT="${2:-}"; shift 2 ;;
+    --kind)   KIND="${2:-}";   shift 2 ;;
+    --format) FORMAT="${2:-}"; shift 2 ;;
     --dry-run|--peek) DRYRUN=1; shift ;;
     *)        POSCMD="$1";     shift ;;
   esac
@@ -123,6 +127,8 @@ fi
 # urlencode for the query string (the command itself still goes as raw text/plain)
 enc() { printf '%s' "$1" | od -An -tx1 -v | tr -d '\n ' | sed 's/\(..\)/%\1/g'; }
 QS="lang=powershell"
+[ -n "$KIND" ]   && QS="$QS&kind=$(enc "$KIND")"
+[ -n "$FORMAT" ] && QS="$QS&format=$(enc "$FORMAT")"
 [ -n "$INTENT" ] && QS="$QS&intent=$(enc "$INTENT")"
 [ -n "$WHY" ]    && QS="$QS&why=$(enc "$WHY")"
 [ -n "$RISK" ]   && QS="$QS&risk=$(enc "$RISK")"
