@@ -35,6 +35,8 @@ export interface Session {
   outcome_note?: string | null;
   /** 1 = risky commands run without waiting for a human. */
   auto_approve?: number;
+  /** 1 = reboot persistence is armed (a re-arm token is waiting for the agent). */
+  persist?: number;
 }
 
 export interface Executor {
@@ -49,6 +51,8 @@ export interface Executor {
   host: string | null;
   ps_version: string | null;
   elevated: number | null;
+  rearm_token: string | null;
+  rearm_expires: number | null;
 }
 
 export interface TargetInfo {
@@ -277,6 +281,13 @@ migrate(db, [
   // reads and sends back as a file. result_data holds the json-mode payload.
   `ALTER TABLE entries ADD COLUMN run_mode TEXT;`,
   `ALTER TABLE entries ADD COLUMN result_data TEXT;`,
+  // Reboot persistence (opt-in): a single-use re-arm token the surviving agent
+  // installs as a logon entry so it comes back armed after one restart.
+  `
+  ALTER TABLE sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE executors ADD COLUMN rearm_token TEXT;
+  ALTER TABLE executors ADD COLUMN rearm_expires INTEGER;
+  `,
 ]);
 
 export const filesDir = join(config.dataDir, 'files');
@@ -832,6 +843,61 @@ export function executorBySession(sessionId: string, token: string): Executor | 
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   db.prepare('UPDATE executors SET last_seen = ? WHERE session_id = ?').run(Date.now(), sessionId);
   return ex;
+}
+
+/**
+ * Arm or clear reboot persistence. On: mint a single-use re-arm token (30 min)
+ * the armed agent will collect on its next poll and install as a logon entry.
+ * Off: drop the flag and any pending token. Requires an armed executor row.
+ */
+export function setPersist(sessionId: string, on: boolean): { persist: boolean; expires_at: number | null } {
+  const ex = getExecutor(sessionId);
+  if (on && (!ex || !ex.armed)) return { persist: false, expires_at: null };
+  if (!on) {
+    db.prepare('UPDATE sessions SET persist = 0 WHERE id = ?').run(sessionId);
+    db.prepare('UPDATE executors SET rearm_token = NULL, rearm_expires = NULL WHERE session_id = ?').run(sessionId);
+    bus.publish(`session:${sessionId}`);
+    bus.publish('sessions');
+    return { persist: false, expires_at: null };
+  }
+  const token = randomBytes(24).toString('base64url');
+  const expires = Date.now() + 30 * 60 * 1000;
+  db.prepare('UPDATE sessions SET persist = 1 WHERE id = ?').run(sessionId);
+  db.prepare('UPDATE executors SET rearm_token = ?, rearm_expires = ? WHERE session_id = ?').run(token, expires, sessionId);
+  bus.publish(`session:${sessionId}`);
+  bus.publish('sessions');
+  return { persist: true, expires_at: expires };
+}
+
+/** The re-arm token to hand the agent on its poll, if one is armed and unexpired. */
+export function pendingRearm(sessionId: string): string | null {
+  const ex = getExecutor(sessionId);
+  if (!ex || !ex.rearm_token || !ex.rearm_expires) return null;
+  return ex.rearm_expires < Date.now() ? null : ex.rearm_token;
+}
+
+/**
+ * Redeem a re-arm token after a reboot: single-use, so it clears the token and
+ * the persist flag (one restart per persist call), then mints a fresh executor
+ * token and marks the agent armed. Returns the token, or null if it does not
+ * match or has expired.
+ */
+export function redeemRearm(sessionId: string, token: string): string | null {
+  const ex = getExecutor(sessionId);
+  if (!ex || !ex.rearm_token || !ex.rearm_expires) return null;
+  if (ex.rearm_expires < Date.now()) return null;
+  const a = Buffer.from(ex.rearm_token);
+  const b = Buffer.from(token);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const newToken = randomBytes(32).toString('base64url');
+  db.prepare(
+    `UPDATE executors SET rearm_token = NULL, rearm_expires = NULL, token_hash = ?, armed = 1, stop = 0,
+       last_seen = ? WHERE session_id = ?`,
+  ).run(sha(newToken), Date.now(), sessionId);
+  db.prepare('UPDATE sessions SET persist = 0 WHERE id = ?').run(sessionId);
+  bus.publish(`session:${sessionId}`);
+  bus.publish('sessions');
+  return newToken;
 }
 
 /**

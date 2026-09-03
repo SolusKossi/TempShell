@@ -28,6 +28,7 @@ function sessionView(session: store.Session): SessionView {
     busy: store.runningSince(session.id) != null,
     runningSeq: store.runningCommandSeq(session.id),
     autoApprove: store.autoApproveOn(session.id),
+    persist: Boolean(session.persist),
     target: ex?.host ? { host: ex.host, ps_version: ex.ps_version, elevated: Boolean(ex.elevated) } : null,
   };
 }
@@ -666,6 +667,7 @@ api.get('/sessions/:slug/autorun', (c) => {
     busy: runningSince != null,
     running_since: runningSince,
     approvals: store.autoApproveOn(session.id) ? 'off' : 'on',
+    persist: Boolean(session.persist),
     pending_command_seqs: pending,
     // Commands held for a human decision. While one sits here the agent is
     // deliberately idle : it is not stuck.
@@ -787,6 +789,9 @@ app.get('/x/:slug/poll', async (c) => {
   const timeoutMs = Math.min(Number(c.req.query('timeout') ?? 60), 90) * 1000;
   const deadline = Date.now() + timeoutMs;
 
+  // Reboot persistence: hand over the re-arm token whenever one is armed, on
+  // whichever response the poll returns.
+  const rearm = store.pendingRearm(session.id);
   let cmd = store.claimNextCommand(session.id);
   while (!cmd && Date.now() < deadline) {
     if (store.getExecutor(session.id)?.stop) return c.json({ stop: true });
@@ -794,7 +799,7 @@ app.get('/x/:slug/poll', async (c) => {
     if (c.req.raw.signal.aborted) break;
     cmd = store.claimNextCommand(session.id);
   }
-  if (!cmd) return c.json({ timed_out: true });
+  if (!cmd) return c.json({ timed_out: true, ...(rearm ? { rearm_token: rearm } : {}) });
   return c.json({
     seq: cmd.seq,
     body: cmd.body,
@@ -807,6 +812,7 @@ app.get('/x/:slug/poll', async (c) => {
     // null = run it; 'json' = run it and also return ConvertTo-Json data;
     // 'upload' = the body is a path to read and send back as a file.
     run_mode: cmd.run_mode ?? null,
+    ...(rearm ? { rearm_token: rearm } : {}),
   });
 });
 
@@ -830,6 +836,41 @@ app.post('/x/:slug/bye', (c) => {
   if (!ex) return c.json({ error: 'unauthorised' }, 401);
   store.executorBye(session.id);
   return c.json({ ok: true });
+});
+
+// Arm (or clear) reboot persistence. On the next poll the armed agent installs a
+// one-shot logon entry that, after one restart, fetches /rearm-agent and comes
+// back armed with no code to type. This is a live unattended shell that survives
+// a reboot, so it is opt-in, one restart per call, and shown on the session page.
+api.post('/sessions/:slug/autorun/persist', (c) => {
+  const session = ownedSession(c, c.get('uid'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const off = c.req.query('off') === '1' || c.req.query('on') === 'false';
+  const r = store.setPersist(session.id, !off);
+  if (!off && !r.persist) {
+    return c.json({ error: 'no armed agent to persist; arm one first' }, 409);
+  }
+  return c.json({
+    ok: true,
+    persist: r.persist,
+    expires_in_seconds: r.expires_at ? Math.max(0, Math.round((r.expires_at - Date.now()) / 1000)) : null,
+  });
+});
+
+// A rebooted agent's logon entry fetches this with its single-use re-arm token.
+// On success it returns the agent script already armed (no prompt), so the shell
+// comes straight back. No cookie: after a reboot there is none, and the token is
+// the credential.
+app.get('/x/:slug/rearm-agent', (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session || !session.auto_enabled) return c.text('# auto-run is not enabled', 404);
+  const token = String(c.req.query('t') ?? '');
+  const execToken = token ? store.redeemRearm(session.id, token) : null;
+  if (!execToken) return c.text('# re-arm token invalid or expired', 401);
+  const safeTitle = session.title.replace(/'/g, "''").replace(/[\r\n]+/g, ' ').slice(0, 60);
+  return c.text(agentScript(`${config.publicUrl}`, session.slug, safeTitle, execToken) + '\n', 200, {
+    'content-type': 'text/plain; charset=utf-8',
+  });
 });
 
 // Post a command's result back; mark that command done so it is never re-served.
@@ -944,7 +985,7 @@ app.get('/x/:slug/agent.ps1', (c) => {
  * runs each command and posts the output back, until the owner stops it or
  * Ctrl+C.
  */
-function agentScript(base: string, slug: string, title: string): string {
+function agentScript(base: string, slug: string, title: string, rearm = ''): string {
   // Rendered as a live terminal dashboard on the target machine. String.raw so
   // the figlet banner's backslashes survive; the PowerShell uses [char] code
   // points instead of backticks, so nothing here needs escaping but ${base},
@@ -1338,23 +1379,30 @@ function Idle($ms) {
 }
 
 # ---- arm (on a clean alternate screen when fancy) ----------------------------
+# ${rearm} is empty for a normal paste. When the agent is re-launched after a
+# reboot by its logon entry, the server bakes an executor token in here, so it
+# skips the prompt and the /arm call and comes straight back armed.
+$rearm = '${rearm}'
 if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); $global:inAlt = $true; Banner ($PT - 7); Put (At ($PT + 1) 5) }
-$pin = Read-Host '   Arming code from Claude'
-
-$armBody = @{ code = $pin; host = $hostName; user = $userName; ps = $psv; elevated = $elevated } | ConvertTo-Json
-try {
-  $armed = Invoke-RestMethod "$base/x/$slug/arm" -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($armBody))
-} catch {
-  $global:said = $true
-  if ($fancy -and $global:inAlt) { Put ($E + '[?1049l'); Put ($E + '[?25h') }
-  # The server says whether the code was wrong (retype it) or expired (ask for
-  # a fresh one); show that rather than a guess that lumps both together.
-  $why = 'wrong or expired code'
-  try { $m = ($_.ErrorDetails.Message | ConvertFrom-Json).error; if ($m) { $why = $m } } catch {}
-  Write-Host ('   Arming failed - ' + $why) -ForegroundColor Red
-  return
+if ($rearm) {
+  $tok = $rearm
+} else {
+  $pin = Read-Host '   Arming code from Claude'
+  $armBody = @{ code = $pin; host = $hostName; user = $userName; ps = $psv; elevated = $elevated } | ConvertTo-Json
+  try {
+    $armed = Invoke-RestMethod "$base/x/$slug/arm" -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($armBody))
+  } catch {
+    $global:said = $true
+    if ($fancy -and $global:inAlt) { Put ($E + '[?1049l'); Put ($E + '[?25h') }
+    # The server says whether the code was wrong (retype it) or expired (ask for
+    # a fresh one); show that rather than a guess that lumps both together.
+    $why = 'wrong or expired code'
+    try { $m = ($_.ErrorDetails.Message | ConvertFrom-Json).error; if ($m) { $why = $m } } catch {}
+    Write-Host ('   Arming failed - ' + $why) -ForegroundColor Red
+    return
+  }
+  $tok = $armed.token
 }
-$tok = $armed.token
 $hdr = @{ Authorization = "Bearer $tok" }
 $global:armedOk = $true
 $state = 'waiting'
@@ -1374,6 +1422,17 @@ try {
     }
     $conn = 'connected'
     $c = $pr.text | ConvertFrom-Json
+
+    if ($c.rearm_token) {
+      # Reboot persistence is armed: write a one-shot logon entry that fetches a
+      # pre-armed agent after the next restart. Idempotent; rewritten each poll.
+      try {
+        $rk = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+        if (-not (Test-Path $rk)) { New-Item -Path $rk -Force | Out-Null }
+        $rc = 'powershell -NoProfile -WindowStyle Normal -Command "irm ''' + $base + '/x/' + $slug + '/rearm-agent?t=' + $c.rearm_token + ''' | iex"'
+        New-ItemProperty -Path $rk -Name 'TempShellRearm' -Value $rc -PropertyType String -Force | Out-Null
+      } catch {}
+    }
 
     if ($c.stop) {
       # Do not tear down: hold a revivable pause so the owner can pick this
