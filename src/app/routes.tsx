@@ -1418,6 +1418,7 @@ function toApiEntry(e: store.Entry, compact = false) {
     ...(e.intent ? { intent: e.intent } : {}),
     ...(e.why ? { why: e.why } : {}),
     ...(e.risk ? { risk: e.risk } : {}),
+    ...(e.timeout_seconds ? { timeout_seconds: e.timeout_seconds } : {}),
     ...(e.approval ? { approval: e.approval } : {}),
     ...(e.decided_at ? { approval_decided_at: e.decided_at } : {}),
     ...(e.decided_by ? { approval_decided_by: e.decided_by } : {}),
