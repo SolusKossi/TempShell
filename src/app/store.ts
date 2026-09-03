@@ -78,6 +78,8 @@ export interface Entry {
   had_errors?: number | null;
   reply_to?: number | null;
   errors_json?: string | null;
+  /** Seconds this one command may run; null means the agent's own default. */
+  timeout_seconds?: number | null;
   /** The action log: what this command does, why, and whether it needed a yes. */
   intent?: string | null;
   why?: string | null;
@@ -261,6 +263,9 @@ migrate(db, [
   // Optional per-session switch: when on, risky commands run without waiting
   // for a human. For a throwaway test box where the approval step is noise.
   `ALTER TABLE sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0;`,
+  // Per-command run cap. Null means the agent's own default (120s). A watch-style
+  // command can ask for longer without raising the ceiling for everything else.
+  `ALTER TABLE entries ADD COLUMN timeout_seconds INTEGER;`,
 ]);
 
 export const filesDir = join(config.dataDir, 'files');
@@ -518,6 +523,8 @@ export interface ActionMeta {
   why?: string | null;
   /** 'risky' holds the command for approval; anything else runs straight away. */
   risk?: string | null;
+  /** Seconds this one command may run before the agent kills it. Null = agent default. */
+  timeoutSeconds?: number | null;
 }
 
 export function addEntry(
@@ -549,8 +556,8 @@ export function addEntry(
 
   db.prepare(
     `INSERT INTO entries (session_id, seq, author, kind, body, lang, file_id, created_at,
-       intent, why, risk, approval)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       intent, why, risk, approval, timeout_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sessionId,
     seq,
@@ -564,6 +571,8 @@ export function addEntry(
     meta.why ? plainText(String(meta.why)).slice(0, 600) : null,
     risk,
     approval,
+    // Clamped here rather than at the edge, so every caller gets the same ceiling.
+    meta.timeoutSeconds ? Math.max(1, Math.min(600, Math.round(meta.timeoutSeconds))) : null,
   );
   db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
 
@@ -711,18 +720,23 @@ const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 // 15 minutes: the arming code is delivered in chat, and there is no telling when
 // the person at the machine will read it, so a short window races human latency.
 const ARM_TTL_MS = 15 * 60 * 1000;
+/** Ceiling for a caller-requested arming window: long enough to span a reboot. */
+const ARM_TTL_MAX_MS = 30 * 60 * 1000;
 
 export function getExecutor(sessionId: string): Executor | null {
   return (db.prepare('SELECT * FROM executors WHERE session_id = ?').get(sessionId) as unknown as Executor) ?? null;
 }
 
 /** Turn on auto-run for a session and mint a fresh single-use arming code. */
-export function enableAuto(sessionId: string): string {
+export function enableAuto(sessionId: string, ttlSeconds?: number | null): string {
   // 4 digits to match the join code. Safe because it is single-use, expires in
   // 15 minutes, is delivered through Claude rather than guessed, and the arm
   // endpoint is rate limited per IP and against the global guess budget.
   const code = String(randomInt(1_000, 10_000));
   const now = Date.now();
+  const ttl = ttlSeconds
+    ? Math.max(60_000, Math.min(ARM_TTL_MAX_MS, Math.round(ttlSeconds) * 1000))
+    : ARM_TTL_MS;
   db.prepare('UPDATE sessions SET auto_enabled = 1 WHERE id = ?').run(sessionId);
   db.prepare(
     `INSERT INTO executors (session_id, arm_hash, arm_expires, token_hash, armed, stop, created_at)
@@ -730,7 +744,7 @@ export function enableAuto(sessionId: string): string {
      ON CONFLICT(session_id) DO UPDATE SET
        arm_hash = excluded.arm_hash, arm_expires = excluded.arm_expires,
        token_hash = NULL, armed = 0, stop = 0`,
-  ).run(sessionId, sha(code), now + ARM_TTL_MS, now);
+  ).run(sessionId, sha(code), now + ttl, now);
   bus.publish(`session:${sessionId}`);
   return code;
 }

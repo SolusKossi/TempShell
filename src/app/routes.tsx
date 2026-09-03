@@ -455,6 +455,8 @@ api.post('/sessions/:slug/command', async (c) => {
   let intent: string | null = c.req.query('intent') ?? null;
   let why: string | null = c.req.query('why') ?? null;
   let risk: string | null = c.req.query('risk') ?? null;
+  // Per-command run cap for watch-style steps. Clamped in the store to 1..600.
+  let timeoutSeconds: number | null = Number(c.req.query('timeout_seconds')) || null;
 
   if (ctype.startsWith('text/plain')) {
     // Decode the raw body as UTF-8 explicitly. A Norwegian path (C:\Users\Bjørn),
@@ -471,6 +473,7 @@ api.post('/sessions/:slug/command', async (c) => {
       intent?: string;
       why?: string;
       risk?: string;
+      timeout_seconds?: number;
     }>(raw);
     if (!parsed.ok) {
       return c.json({ error: 'invalid JSON body', detail: parsed.error, hint: 'send Content-Type: text/plain with the raw command instead, or use body_b64' }, 400);
@@ -482,6 +485,7 @@ api.post('/sessions/:slug/command', async (c) => {
     if (p.intent !== undefined) intent = p.intent;
     if (p.why !== undefined) why = p.why;
     if (p.risk !== undefined) risk = p.risk;
+    if (p.timeout_seconds !== undefined) timeoutSeconds = Number(p.timeout_seconds) || null;
   }
 
   if (!text.trim()) return c.json({ error: 'body required' }, 400);
@@ -492,6 +496,7 @@ api.post('/sessions/:slug/command', async (c) => {
     intent,
     why,
     risk,
+    timeoutSeconds,
   });
 
   // Tell the caller which loop it is in: will this run by itself, or wait for a human?
@@ -599,7 +604,10 @@ api.put('/quick', async (c) => {
 api.post('/sessions/:slug/autorun', (c) => {
   const session = ownedSession(c, c.get('uid'));
   if (!session) return c.json({ error: 'not found' }, 404);
-  const armingCode = store.enableAuto(session.id);
+  // A caller expecting a reboot can ask for a longer window, so the code is
+  // issued before the machine goes down rather than after it comes back.
+  const ttl = Number(c.req.query('arming_ttl_seconds')) || null;
+  const armingCode = store.enableAuto(session.id, ttl);
   return c.json({
     ok: true,
     arming_code: armingCode,
@@ -786,6 +794,8 @@ app.get('/x/:slug/poll', async (c) => {
     intent: cmd.intent ?? null,
     why: cmd.why ?? null,
     risk: cmd.risk ?? null,
+    // Null means "use your own default"; the agent clamps again on its side.
+    timeout_seconds: cmd.timeout_seconds ?? null,
   });
 });
 
@@ -1166,7 +1176,11 @@ function Trunc([string]$s) {
 # Run one command in its own runspace, streaming output into a collection so a
 # throw, a parse error or a timeout cannot swallow what was already produced.
 # A command that does not finish normally never reports status 'ok'.
-function Invoke-Cmd($cmd) {
+function Invoke-Cmd($cmd, $limit) {
+  # Per-command cap when the poster asked for one, else the agent default.
+  # Clamped here too: the server is not the only thing that can post a command.
+  $cap = $TIMEOUT
+  if ($limit) { $cap = [int]$limit; if ($cap -lt 1) { $cap = 1 }; if ($cap -gt 600) { $cap = 600 } }
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $ps = [PowerShell]::Create()
   $null = $ps.AddScript('$OutputEncoding=[System.Text.Encoding]::UTF8; try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}').AddStatement().AddScript($cmd + [char]10 + '$global:__tsReachedEnd = $true')
@@ -1177,7 +1191,7 @@ function Invoke-Cmd($cmd) {
   try {
     $h = $ps.BeginInvoke($in, $out)
     while (-not $h.IsCompleted) {
-      if ($sw.Elapsed.TotalSeconds -ge $TIMEOUT) { $ps.Stop(); $timedOut = $true; break }
+      if ($sw.Elapsed.TotalSeconds -ge $cap) { $ps.Stop(); $timedOut = $true; break }
       Draw; Start-Sleep -Milliseconds 110
     }
     if (-not $timedOut) { $null = $ps.EndInvoke($h) }
@@ -1213,7 +1227,7 @@ function Invoke-Cmd($cmd) {
   foreach ($wn in $ps.Streams.Warning) { $errLines += 'WARNING: ' + [string]$wn.Message }
   foreach ($vb in $ps.Streams.Verbose) { $errLines += 'VERBOSE: ' + [string]$vb.Message }
   foreach ($db in $ps.Streams.Debug)   { $errLines += 'DEBUG: '   + [string]$db.Message }
-  if ($timedOut) { $errLines += "Command exceeded $TIMEOUT seconds and was stopped." }
+  if ($timedOut) { $errLines += "Command exceeded $cap seconds and was stopped." }
   $se = NL ($errLines -join [char]10)
 
   $lec = $null
@@ -1330,7 +1344,7 @@ try {
     $global:flash = 4
     $state = 'running'; $runStart = Get-Date
     Plain ("> " + $curIntent) 44
-    $r = Invoke-Cmd $c.body
+    $r = Invoke-Cmd $c.body $c.timeout_seconds
 
     $to = Trunc $r.stdout; $te = Trunc $r.stderr
     $out = $to[0]; $err = $te[0]; $truncated = ($to[1] -or $te[1])
