@@ -727,6 +727,25 @@ api.post('/sessions/:slug/autorun/resume', (c) => {
   return c.json({ ok: true, revived });
 });
 
+// Arm (or clear) reboot persistence. On the next poll the armed agent installs a
+// one-shot logon entry that, after one restart, fetches /rearm-agent and comes
+// back armed with no code to type. This is a live unattended shell that survives
+// a reboot, so it is opt-in, one restart per call, and shown on the session page.
+api.post('/sessions/:slug/autorun/persist', (c) => {
+  const session = ownedSession(c, c.get('uid'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const off = c.req.query('off') === '1' || c.req.query('on') === 'false';
+  const r = store.setPersist(session.id, !off);
+  if (!off && !r.persist) {
+    return c.json({ error: 'no armed agent to persist; arm one first' }, 409);
+  }
+  return c.json({
+    ok: true,
+    persist: r.persist,
+    expires_in_seconds: r.expires_at ? Math.max(0, Math.round((r.expires_at - Date.now()) / 1000)) : null,
+  });
+});
+
 app.route('/api', api);
 
 /* ----------------------------------------------------- executor (agent) --- */
@@ -838,24 +857,6 @@ app.post('/x/:slug/bye', (c) => {
   return c.json({ ok: true });
 });
 
-// Arm (or clear) reboot persistence. On the next poll the armed agent installs a
-// one-shot logon entry that, after one restart, fetches /rearm-agent and comes
-// back armed with no code to type. This is a live unattended shell that survives
-// a reboot, so it is opt-in, one restart per call, and shown on the session page.
-api.post('/sessions/:slug/autorun/persist', (c) => {
-  const session = ownedSession(c, c.get('uid'));
-  if (!session) return c.json({ error: 'not found' }, 404);
-  const off = c.req.query('off') === '1' || c.req.query('on') === 'false';
-  const r = store.setPersist(session.id, !off);
-  if (!off && !r.persist) {
-    return c.json({ error: 'no armed agent to persist; arm one first' }, 409);
-  }
-  return c.json({
-    ok: true,
-    persist: r.persist,
-    expires_in_seconds: r.expires_at ? Math.max(0, Math.round((r.expires_at - Date.now()) / 1000)) : null,
-  });
-});
 
 // A rebooted agent's logon entry fetches this with its single-use re-arm token.
 // On success it returns the agent script already armed (no prompt), so the shell
