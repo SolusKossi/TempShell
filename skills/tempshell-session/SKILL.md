@@ -180,6 +180,11 @@ min), check in. Auto-run replies are tagged `author: "auto"`.
 file stays empty until the command finishes, so polling it tells you nothing and just
 burns turns. Progress goes to stderr instead: `posted seq N, waiting...` right after
 the post, or `seq N is HELD FOR APPROVAL - <reason>` if a human has to decide first.
+
+**Backgrounded, you only see that stderr when the task finishes.** So when a command
+may be held, do not wait for the run to end before speaking: read `approval` and
+`risk_reason` from the POST response and relay the approval request immediately.
+Otherwise the person is waiting for you and you are waiting for them.
 While you wait, either say what you are waiting on, or do other useful work.
 
 **Pull one value out with `--field` instead of printing the whole reply.** Takes a
@@ -369,6 +374,50 @@ back up; `false` means the window closed or the agent was never armed, and you n
 fresh arm. After a revive, just post the next command as usual.
 
 ## Writing commands
+
+**Backslashes: your shell can halve them before TempShell ever sees them.** A body
+containing `\\` can arrive on the target as `\`, which silently breaks regex escapes
+(`'^USB\\'` becomes `^USB\`, an invalid pattern). TempShell itself is byte-exact end
+to end; the loss happens in the layer that hands your command to bash, *before*
+`tempshell-run.sh` runs, and a quoted heredoc does **not** protect you.
+
+Single backslashes in Windows paths are untouched, so paths look fine and this only
+bites on regexes. When the command contains backslash escapes, write it to a file and
+post that: those bytes never pass through a shell string.
+
+```bash
+# Write the command with the file-writing tool, then:
+bash ~/.claude/skills/tempshell-session/tempshell-run.sh $SLUG --file /tmp/cmd.ps1 \
+  --intent "Find USB devices" --why "The dock may not be enumerating"
+```
+
+Or sidestep backslashes entirely: `.StartsWith('USB')`, `-like 'USB*'`, or
+`[regex]::Escape(...)`.
+
+**Long-running commands: raise the cap, don't lose the output.** The default is 120
+seconds and a command that overruns is killed with `status: "timeout"`, keeping only
+what it printed before the cap. For a watch loop, ask for more with `--timeout N`
+(1-600), or put the watch in one command and the follow-up queries in the next:
+
+```bash
+printf '%s' 'while (...) { Start-Sleep 5 }' \
+  | bash ~/.claude/skills/tempshell-session/tempshell-run.sh $SLUG --timeout 300 \
+      --intent "Watch the service come up" --why "It restarts slowly after a reset"
+```
+
+**A reboot kills the agent, and the code may lapse while the machine is down.** Mint
+the next arming code *before* the reboot with a longer window:
+`POST .../autorun?arming_ttl_seconds=1800` (60s to 30min). Relay it along with the
+reboot instruction, so the person can re-paste the moment they are back rather than
+waiting on you for a fresh code.
+
+**PowerShell 5.1 traps that cost a real session:**
+
+- `Measure-Object` takes property *names*, not a scriptblock. `Measure-Object { $_.x } -Sum`
+  silently returns 0 on 5.1. Project first: `... | ForEach-Object { [pscustomobject]@{ x = [double]$_.x } } | Measure-Object x -Sum`.
+- `Get-AppxPackage -User '<domain\name>'` and `-User <SID>` both fail with "No valid
+  SID could be determined" when the agent runs as a different (admin) account. Use
+  `-AllUsers -Name <pkg>`.
 
 **Assume Windows PowerShell 5.1 and write for it.** Most Windows machines you will
 reach run 5.1 (Windows Terminal may be the host, but the shell inside it is still

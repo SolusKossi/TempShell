@@ -30,10 +30,17 @@ tempshell-run.sh <slug> [command] [options]        (command on stdin is preferre
   --intent TEXT   what this step does, shown live on the session page
   --why TEXT      why it is being done, shown live
   --risk risky    hold the command until a human at the machine approves it
+  --file PATH     read the command from a file instead of stdin or an argument
+  --timeout N     seconds this command may run, 1-600 (default 120)
   --field PATH    print only that value from the reply, e.g. result.status
   --quiet         status/exit/duration, then stdout, then stderr
   --dry-run       show how the step will appear on the page; posts nothing
   -h, --help      this text
+
+BACKSLASHES: your shell (and the tool driving it) can halve a doubled backslash
+  before this script ever sees it, which silently breaks regex escapes. TempShell
+  itself is byte-exact. If the command contains backslash escapes, write it to a
+  file and use --file: those bytes never pass through a shell string.
 
 THIS POSTS A COMMAND THAT RUNS ON SOMEONE ELSE'S MACHINE.
   - It waits up to 30 minutes for the reply. Your Bash tool timeout is the real
@@ -73,7 +80,7 @@ fi
 
 # --intent / --why build the action log on the session page; --risk risky holds
 # the command until someone at the machine approves it.
-INTENT=""; WHY=""; RISK=""; POSCMD=""; QUIET=0; FIELD=""; DRYRUN=0
+INTENT=""; WHY=""; RISK=""; POSCMD=""; QUIET=0; FIELD=""; DRYRUN=0; CMDFILE=""; TIMEOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --intent) INTENT="${2:-}"; shift 2 ;;
@@ -81,12 +88,20 @@ while [ $# -gt 0 ]; do
     --risk)   RISK="${2:-}";   shift 2 ;;
     --quiet)  QUIET=1;         shift ;;
     --field)  FIELD="${2:-}";  shift 2 ;;
+    --file)   CMDFILE="${2:-}"; shift 2 ;;
+    --timeout) TIMEOUT="${2:-}"; shift 2 ;;
     --dry-run|--peek) DRYRUN=1; shift ;;
     *)        POSCMD="$1";     shift ;;
   esac
 done
 
-if [ "$POSCMD" != "" ]; then CMD="$POSCMD"; else CMD="$(cat)"; fi
+# --file is the escape hatch for a body your shell would mangle. Writing the
+# command to a file and naming it here means the bytes never pass through a
+# shell string, so backslashes (regex escapes especially) survive verbatim.
+if [ -n "$CMDFILE" ]; then
+  [ -f "$CMDFILE" ] || { printf '{"error":"no such command file","path":"%s"}\n' "$CMDFILE"; exit 1; }
+  CMD="$(cat "$CMDFILE")"
+elif [ "$POSCMD" != "" ]; then CMD="$POSCMD"; else CMD="$(cat)"; fi
 if [ -z "${CMD//[[:space:]]/}" ]; then echo '{"error":"empty command"}'; exit 1; fi
 
 if [ "$DRYRUN" = "1" ]; then
@@ -111,6 +126,7 @@ QS="lang=powershell"
 [ -n "$INTENT" ] && QS="$QS&intent=$(enc "$INTENT")"
 [ -n "$WHY" ]    && QS="$QS&why=$(enc "$WHY")"
 [ -n "$RISK" ]   && QS="$QS&risk=$(enc "$RISK")"
+[ -n "$TIMEOUT" ] && QS="$QS&timeout_seconds=$(enc "$TIMEOUT")"
 
 have_node=1; command -v node >/dev/null 2>&1 || have_node=0
 
