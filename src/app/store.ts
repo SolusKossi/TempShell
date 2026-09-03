@@ -80,6 +80,10 @@ export interface Entry {
   errors_json?: string | null;
   /** Seconds this one command may run; null means the agent's own default. */
   timeout_seconds?: number | null;
+  /** null runs the block; 'json' also returns data; 'upload' sends a file back. */
+  run_mode?: string | null;
+  /** ConvertTo-Json of the pipeline output, for a json-mode command's result. */
+  result_data?: string | null;
   /** The action log: what this command does, why, and whether it needed a yes. */
   intent?: string | null;
   why?: string | null;
@@ -105,6 +109,8 @@ export interface AutoResult {
   replyTo?: number | null;
   /** Structured error records as posted by the agent (kept as JSON text). */
   errorsJson?: string | null;
+  /** ConvertTo-Json of the pipeline output, when the command asked for json. */
+  data?: string | null;
 }
 
 export interface StoredFile {
@@ -266,6 +272,11 @@ migrate(db, [
   // Per-command run cap. Null means the agent's own default (120s). A watch-style
   // command can ask for longer without raising the ceiling for everything else.
   `ALTER TABLE entries ADD COLUMN timeout_seconds INTEGER;`,
+  // run_mode: null runs the block; 'json' also returns ConvertTo-Json of the
+  // pipeline output in result.data; 'upload' means the body is a path the agent
+  // reads and sends back as a file. result_data holds the json-mode payload.
+  `ALTER TABLE entries ADD COLUMN run_mode TEXT;`,
+  `ALTER TABLE entries ADD COLUMN result_data TEXT;`,
 ]);
 
 export const filesDir = join(config.dataDir, 'files');
@@ -525,6 +536,8 @@ export interface ActionMeta {
   risk?: string | null;
   /** Seconds this one command may run before the agent kills it. Null = agent default. */
   timeoutSeconds?: number | null;
+  /** 'json' (return ConvertTo-Json data) or 'upload' (body is a path to send back). */
+  runMode?: string | null;
 }
 
 export function addEntry(
@@ -556,8 +569,8 @@ export function addEntry(
 
   db.prepare(
     `INSERT INTO entries (session_id, seq, author, kind, body, lang, file_id, created_at,
-       intent, why, risk, approval, timeout_seconds)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       intent, why, risk, approval, timeout_seconds, run_mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sessionId,
     seq,
@@ -573,6 +586,7 @@ export function addEntry(
     approval,
     // Clamped here rather than at the edge, so every caller gets the same ceiling.
     meta.timeoutSeconds ? Math.max(1, Math.min(600, Math.round(meta.timeoutSeconds))) : null,
+    meta.runMode ?? null,
   );
   db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
 
@@ -607,8 +621,8 @@ export function addResult(sessionId: string, result: AutoResult): Entry {
   const status = result.status === 'ok' && result.hadErrors ? 'error' : result.status;
   db.prepare(
     `INSERT INTO entries (session_id, seq, author, kind, body, lang, file_id, created_at,
-       stdout, stderr, exit_code, duration_ms, truncated, run_status, had_errors, reply_to, errors_json)
-     VALUES (?, ?, 'auto', 'output', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       stdout, stderr, exit_code, duration_ms, truncated, run_status, had_errors, reply_to, errors_json, result_data)
+     VALUES (?, ?, 'auto', 'output', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sessionId,
     seq,
@@ -623,6 +637,7 @@ export function addResult(sessionId: string, result: AutoResult): Entry {
     result.hadErrors ? 1 : 0,
     result.replyTo == null ? null : Number(result.replyTo),
     result.errorsJson ? result.errorsJson.slice(0, 200_000) : null,
+    result.data ? result.data.slice(0, 500_000) : null,
   );
   db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
   bus.publish(`session:${sessionId}`);

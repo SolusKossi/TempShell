@@ -17,6 +17,9 @@ export const config = {
   /** Per-file cap on pasted screenshots and attachments. */
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 10 * 1024 * 1024),
 
+  /** Per-file cap on files the agent pulls off the target machine. */
+  maxAgentUploadBytes: Number(process.env.MAX_AGENT_UPLOAD_BYTES ?? 25 * 1024 * 1024),
+
   /** Where the SQLite file lives. One directory keeps backups trivial. */
   dataDir: process.env.DATA_DIR ?? './data',
 

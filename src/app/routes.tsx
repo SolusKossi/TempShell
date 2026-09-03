@@ -457,6 +457,8 @@ api.post('/sessions/:slug/command', async (c) => {
   let risk: string | null = c.req.query('risk') ?? null;
   // Per-command run cap for watch-style steps. Clamped in the store to 1..600.
   let timeoutSeconds: number | null = Number(c.req.query('timeout_seconds')) || null;
+  // format=json -> the agent also returns ConvertTo-Json of the pipeline output.
+  let format: string | null = c.req.query('format') ?? null;
 
   if (ctype.startsWith('text/plain')) {
     // Decode the raw body as UTF-8 explicitly. A Norwegian path (C:\Users\Bjørn),
@@ -474,6 +476,7 @@ api.post('/sessions/:slug/command', async (c) => {
       why?: string;
       risk?: string;
       timeout_seconds?: number;
+      format?: string;
     }>(raw);
     if (!parsed.ok) {
       return c.json({ error: 'invalid JSON body', detail: parsed.error, hint: 'send Content-Type: text/plain with the raw command instead, or use body_b64' }, 400);
@@ -486,10 +489,14 @@ api.post('/sessions/:slug/command', async (c) => {
     if (p.why !== undefined) why = p.why;
     if (p.risk !== undefined) risk = p.risk;
     if (p.timeout_seconds !== undefined) timeoutSeconds = Number(p.timeout_seconds) || null;
+    if (p.format !== undefined) format = p.format;
   }
 
   if (!text.trim()) return c.json({ error: 'body required' }, 400);
-  // A note is prose, not code, so it carries no language unless one was asked for.
+  // 'upload' is a command whose body is a path the agent sends back; 'json' runs
+  // the block and also returns ConvertTo-Json of its output. A note is prose.
+  const isUpload = kind === 'upload';
+  const runMode = format === 'json' ? 'json' : isUpload ? 'upload' : null;
   const isNote = kind === 'note';
   const entryLang = isNote && c.req.query('lang') == null ? null : lang;
   const entry = store.addEntry(session.id, 'claude', isNote ? 'note' : 'command', text.slice(0, 200_000), entryLang, null, {
@@ -497,6 +504,7 @@ api.post('/sessions/:slug/command', async (c) => {
     why,
     risk,
     timeoutSeconds,
+    runMode,
   });
 
   // Tell the caller which loop it is in: will this run by itself, or wait for a human?
@@ -796,6 +804,9 @@ app.get('/x/:slug/poll', async (c) => {
     risk: cmd.risk ?? null,
     // Null means "use your own default"; the agent clamps again on its side.
     timeout_seconds: cmd.timeout_seconds ?? null,
+    // null = run it; 'json' = run it and also return ConvertTo-Json data;
+    // 'upload' = the body is a path to read and send back as a file.
+    run_mode: cmd.run_mode ?? null,
   });
 });
 
@@ -839,6 +850,7 @@ app.post('/x/:slug/result', async (c) => {
     status?: string;
     had_errors?: boolean;
     errors?: unknown;
+    data?: string;
   }>(c);
   if (!parsed) return c.json({ error: 'invalid JSON body' }, 400);
 
@@ -861,8 +873,47 @@ app.post('/x/:slug/result', async (c) => {
     hadErrors: Boolean(parsed.had_errors),
     replyTo: seq > 0 ? seq : null,
     errorsJson,
+    data: parsed.data != null ? String(parsed.data) : null,
   });
   return c.json({ ok: true, ran_seq: seq });
+});
+
+// A file the agent pulled off the target machine (item: get a file back). Raw
+// bytes in the body, name+seq in the query; token-gated like the other /x
+// endpoints. Lands as a kind:file entry, and writes the command's result so the
+// caller waiting on that seq is released.
+app.post('/x/:slug/upload', async (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const ex = executorAuth(c, session);
+  if (!ex) return c.json({ error: 'unauthorised' }, 401);
+  // The name is display-only (files are stored by generated id, never by name),
+  // but strip path separators and control chars so it reads cleanly in the log.
+  const name = ((c.req.query('name') ?? 'file').replace(/[\\/\r\n\t]/g, '_').slice(0, 200)) || 'file';
+  const seq = Number(c.req.query('seq')) || 0;
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  if (bytes.length === 0) return c.json({ error: 'empty file' }, 400);
+  if (bytes.length > config.maxAgentUploadBytes) {
+    return c.json({ error: `too large, max ${Math.round(config.maxAgentUploadBytes / 1024 / 1024)}MB` }, 413);
+  }
+  const mime = (c.req.header('content-type') ?? 'application/octet-stream').split(';')[0]!.trim() || 'application/octet-stream';
+  const stored = store.saveFile(session.id, name, mime, bytes);
+  store.addEntry(session.id, 'auto', 'file', stored.name, null, stored.id);
+  if (seq > 0) {
+    store.markCommandDone(session.id, seq);
+    store.addResult(session.id, {
+      stdout: `Pulled ${stored.name} off the machine (${bytes.length} bytes).`,
+      stderr: '',
+      exitCode: 0,
+      durationMs: null,
+      truncated: false,
+      status: 'ok',
+      hadErrors: false,
+      replyTo: seq,
+      errorsJson: null,
+    });
+  }
+  return c.json({ ok: true, id: stored.id, size: bytes.length });
 });
 
 // The self-contained agent, filled in for this session. Served to the browser
@@ -1176,7 +1227,7 @@ function Trunc([string]$s) {
 # Run one command in its own runspace, streaming output into a collection so a
 # throw, a parse error or a timeout cannot swallow what was already produced.
 # A command that does not finish normally never reports status 'ok'.
-function Invoke-Cmd($cmd, $limit) {
+function Invoke-Cmd($cmd, $limit, $asJson) {
   # Per-command cap when the poster asked for one, else the agent default.
   # Clamped here too: the server is not the only thing that can post a command.
   $cap = $TIMEOUT
@@ -1244,7 +1295,12 @@ function Invoke-Cmd($cmd, $limit) {
   if ($timedOut) { $status = 'timeout' } elseif ($hadErr) { $status = 'error' } else { $status = 'ok' }
   try { $ps.Dispose() } catch { }
 
-  return @{ stdout = "$so"; stderr = "$se"; exit_code = $(if ($null -ne $lec) { [int]$lec } else { $null }); status = $status; had = $hadErr; ms = $sw.ElapsedMilliseconds; errors = $errRecords }
+  # For format=json: serialize the raw pipeline objects, not the rendered text.
+  # Pre-serialized to a string here so the outer result payload does not have to
+  # walk (and possibly choke on) live objects.
+  $data = $null
+  if ($asJson) { try { $data = @($out) | ConvertTo-Json -Depth 4 -Compress } catch { $data = '"json conversion failed: ' + ($_.Exception.Message -replace '"','') + '"' } }
+  return @{ stdout = "$so"; stderr = "$se"; exit_code = $(if ($null -ne $lec) { [int]$lec } else { $null }); status = $status; had = $hadErr; ms = $sw.ElapsedMilliseconds; errors = $errRecords; data = $data }
 }
 
 # Run an HTTP GET in its own runspace, drawing at a steady rate while it is in
@@ -1341,16 +1397,48 @@ try {
     $curIntent = if ($c.intent) { [string]$c.intent } else { [string]$c.body }
     $curWhy = if ($c.why) { [string]$c.why } else { '' }
     $curRisk = [string]$c.risk
+    $mode = [string]$c.run_mode
     $global:flash = 4
     $state = 'running'; $runStart = Get-Date
     Plain ("> " + $curIntent) 44
-    $r = Invoke-Cmd $c.body $c.timeout_seconds
+
+    if ($mode -eq 'upload') {
+      # Pull a file OFF the machine: read the path in the body, POST the bytes.
+      # 5.1 has no -Form, so send raw octet-stream with name+seq in the query.
+      $path = ([string]$c.body).Trim()
+      $ok = $false; $msg = ''
+      try {
+        $fi = Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($fi.PSIsContainer) { $msg = 'that path is a folder, not a file' }
+        elseif ($fi.Length -gt 26214400) { $msg = ('file is {0:0.0} MB, over the 25 MB limit' -f ($fi.Length / 1MB)) }
+        else {
+          $bytes = [System.IO.File]::ReadAllBytes($fi.FullName)
+          $u = "$base/x/$slug/upload?seq=$($c.seq)&name=$([uri]::EscapeDataString($fi.Name))"
+          Invoke-RestMethod $u -Method Post -Headers $hdr -ContentType 'application/octet-stream' -Body $bytes -TimeoutSec 120 | Out-Null
+          $ok = $true
+        }
+      } catch { $msg = $_.Exception.Message }
+      if (-not $ok) {
+        # The server writes the result on success; on failure the agent must, so
+        # whoever is waiting on this seq is released instead of blocking.
+        $eb = @{ seq = $c.seq; stdout = ''; stderr = ("Upload failed: " + $msg); exit_code = $null; duration_ms = $null; status = 'error'; truncated = $false; had_errors = $true; errors = @() } | ConvertTo-Json -Depth 4
+        for ($try = 0; $try -lt 4; $try++) { try { Invoke-RestMethod "$base/x/$slug/result" -Method Post -Headers $hdr -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($eb)) | Out-Null; break } catch { Start-Sleep -Seconds 2 } }
+      }
+      $ranCount++; $curRisk = ''
+      if ($ok) { $lastLine = 'uploaded'; $lastCol = 40 } else { $lastLine = 'upload failed'; $lastCol = 196 }
+      $state = 'waiting'; Draw
+      continue
+    }
+
+    $r = Invoke-Cmd $c.body $c.timeout_seconds ($mode -eq 'json')
 
     $to = Trunc $r.stdout; $te = Trunc $r.stderr
     $out = $to[0]; $err = $te[0]; $truncated = ($to[1] -or $te[1])
 
     $state = 'sending'; Draw
-    $body = @{ seq = $c.seq; stdout = $out; stderr = $err; exit_code = $r.exit_code; duration_ms = $r.ms; status = $r.status; truncated = $truncated; had_errors = $r.had; errors = $r.errors } | ConvertTo-Json -Depth 5
+    $payload = @{ seq = $c.seq; stdout = $out; stderr = $err; exit_code = $r.exit_code; duration_ms = $r.ms; status = $r.status; truncated = $truncated; had_errors = $r.had; errors = $r.errors }
+    if ($mode -eq 'json' -and $r.data) { $payload.data = [string]$r.data }
+    $body = $payload | ConvertTo-Json -Depth 5
     for ($try = 0; $try -lt 4; $try++) {
       try { Invoke-RestMethod "$base/x/$slug/result" -Method Post -Headers $hdr -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | Out-Null; break } catch { Start-Sleep -Seconds 2 }
     }
@@ -1392,6 +1480,10 @@ function serveFile(c: Context, file: store.StoredFile) {
 }
 
 /** Errors were stored as JSON text the agent posted; parse defensively. */
+function safeData(raw: string): unknown {
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
 function safeErrors(json: string): unknown {
   try {
     return JSON.parse(json);
@@ -1419,6 +1511,7 @@ function toApiEntry(e: store.Entry, compact = false) {
     ...(e.why ? { why: e.why } : {}),
     ...(e.risk ? { risk: e.risk } : {}),
     ...(e.timeout_seconds ? { timeout_seconds: e.timeout_seconds } : {}),
+    ...(e.run_mode ? { run_mode: e.run_mode } : {}),
     ...(e.approval ? { approval: e.approval } : {}),
     ...(e.decided_at ? { approval_decided_at: e.decided_at } : {}),
     ...(e.decided_by ? { approval_decided_by: e.decided_by } : {}),
@@ -1435,6 +1528,9 @@ function toApiEntry(e: store.Entry, compact = false) {
             // Structured error records (message, fq_error_id, category, type,
             // target, script_line) when the agent supplied them.
             ...(e.errors_json ? { errors: safeErrors(e.errors_json) } : {}),
+            // ConvertTo-Json of the pipeline output for a json-mode command,
+            // returned parsed so a caller can read fields without shaping text.
+            ...(e.result_data ? { data: safeData(e.result_data) } : {}),
           },
         }
       : {}),
