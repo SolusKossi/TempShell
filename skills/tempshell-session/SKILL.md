@@ -85,13 +85,13 @@ The agent paints a small live dashboard (status, current command, a looping load
 while a command runs, last result). The person at the machine does not have to read
 or do anything in it, just leave the window open.
 
-### 3. Wait for it to arm (background task)
+### 3. Wait for it to arm
 
 ```bash
 bash ~/.claude/skills/tempshell-session/tempshell-wait-arm.sh $SLUG
 ```
 
-Run it **as a background task**: you are woken the moment it arms, and it prints the
+It returns the moment the machine arms, and prints the
 target it reported, so you learn the shell version and whether it is elevated
 *before* your first command. If `target.elevated` is false, say so: admin-only checks
 will fail, and offer to have the agent re-run in an elevated window. The
@@ -187,20 +187,16 @@ printf '%s' 'Get-ChildItem "C:\Program Files" | Select-Object Name' \
   | bash ~/.claude/skills/tempshell-session/tempshell-run.sh $SLUG
 ```
 
-Run it **as a background task**: you are re-invoked the moment the result lands, so
-you never stop and wait to be told it finished. If it prints `"gave_up":true` (30
-min), check in. Auto-run replies are tagged `author: "auto"`.
+It returns when the result lands. If it prints `"gave_up":true` (30 min), check in.
+Auto-run replies are tagged `author: "auto"`.
 
-**That notification is the only signal you need: do not poll the output file.** The
-file stays empty until the command finishes, so polling it tells you nothing and just
-burns turns. Progress goes to stderr instead: `posted seq N, waiting...` right after
-the post, or `seq N is HELD FOR APPROVAL - <reason>` if a human has to decide first.
+Progress goes to stderr: `posted seq N, waiting...` right after the post, or
+`seq N is HELD FOR APPROVAL - <reason>` if a human has to decide first.
 
-**Backgrounded, you only see that stderr when the task finishes.** So when a command
-may be held, do not wait for the run to end before speaking: read `approval` and
-`risk_reason` from the POST response and relay the approval request immediately.
-Otherwise the person is waiting for you and you are waiting for them.
-While you wait, either say what you are waiting on, or do other useful work.
+**You only see that stderr when the call returns.** So when a command may be held,
+do not wait for the run to end before speaking: post it with `curl` first, read
+`approval` and `risk_reason` from the POST response, and relay the approval request
+immediately. Otherwise the person is waiting for you and you are waiting for them.
 
 **Pull one value out with `--field` instead of printing the whole reply.** Takes a
 dotted path into the reply JSON and prints just that, so a 100 KB result costs you
