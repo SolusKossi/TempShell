@@ -38,6 +38,13 @@ reject an unknown token, so it is a default, not a service to sign up for.
 
 ### 1. Create a session, titled after the actual problem
 
+**Reuse before you create.** If this task already has a session (same machine, same
+job), do NOT create another. An expired arming code does not kill the session:
+`POST .../autorun` on the existing slug returns a fresh arming code with the same
+`join_url`, so the person only pastes the agent again. Only create a new session for a
+different machine or job. Before creating one, check the slug you already hold.
+If a duplicate session exists, stop it with `POST .../autorun/stop`.
+
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json'   -d '{"title":"Intune sync on the test PC"}'   "$BASE/api/sessions"
 ```
@@ -94,6 +101,14 @@ again for a fresh one. If it has already lapsed, the agent says so in plain word
 relay a fresh one rather than telling them to retype. You do not have to guess how much is left:
 `POST .../autorun` returns `arming_expires_in_seconds`, and `GET .../autorun` keeps
 reporting it until the agent arms (then it is null).
+
+**Do not rely on the wake-up alone.** A background waiter can finish without you
+reacting (on 2026-10-01 the waiter wrote `armed` and the session sat ready for about
+2 minutes unnoticed). So whenever the user says the agent is armed, or replies about the
+machine, run `GET .../autorun` first and read `armed`, `target.elevated`, `busy`,
+`awaiting_approval` and the last entries before saying anything. Never answer
+"waiting" from memory. `last_seen` only moves between commands, so a stale value
+during a long command does not mean the agent is stuck; read the entries instead.
 
 ### 4. Say what you are doing, every time
 
