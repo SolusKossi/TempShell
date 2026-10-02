@@ -46,6 +46,10 @@ export interface Executor {
   token_hash: string | null;
   armed: number;
   stop: number;
+  /** Why auto-run was stopped, plus when and by whom/source. */
+  stopped_reason: string | null;
+  stopped_at: number | null;
+  stopped_by: string | null;
   last_seen: number | null;
   created_at: number;
   host: string | null;
@@ -287,6 +291,12 @@ migrate(db, [
   ALTER TABLE sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE executors ADD COLUMN rearm_token TEXT;
   ALTER TABLE executors ADD COLUMN rearm_expires INTEGER;
+  `,
+  // Appended: existing databases record migration indices, never insert above.
+  `
+  ALTER TABLE executors ADD COLUMN stopped_reason TEXT;
+  ALTER TABLE executors ADD COLUMN stopped_at INTEGER;
+  ALTER TABLE executors ADD COLUMN stopped_by TEXT;
   `,
 ]);
 
@@ -724,7 +734,7 @@ export function sweep(): { purged: number; disarmed: number } {
     for (const ex of db
       .prepare('SELECT session_id FROM executors WHERE armed = 1 AND stop = 0 AND (last_seen IS NULL OR last_seen < ?)')
       .all(idleCutoff) as unknown as { session_id: string }[]) {
-      haltAuto(ex.session_id);
+      haltAuto(ex.session_id, 'idle_cleanup', 'server_cleanup');
       disarmed++;
     }
   }
@@ -769,7 +779,7 @@ export function enableAuto(sessionId: string, ttlSeconds?: number | null): strin
      VALUES (?, ?, ?, NULL, 0, 0, ?)
      ON CONFLICT(session_id) DO UPDATE SET
        arm_hash = excluded.arm_hash, arm_expires = excluded.arm_expires,
-       token_hash = NULL, armed = 0, stop = 0`,
+       token_hash = NULL, armed = 0, stop = 0, stopped_reason = NULL, stopped_at = NULL, stopped_by = NULL`,
   ).run(sessionId, sha(code), now + ttl, now);
   bus.publish(`session:${sessionId}`);
   return code;
@@ -781,9 +791,11 @@ export function enableAuto(sessionId: string, ttlSeconds?: number | null): strin
  * next poll and exits, instead of a 401 it would retry forever. A later
  * enableAuto resets the row; deleting the session cascades it away.
  */
-export function haltAuto(sessionId: string): void {
+export function haltAuto(sessionId: string, reason = 'explicit_stop', by = 'owner'): void {
+  const now = Date.now();
   db.prepare('UPDATE sessions SET auto_enabled = 0 WHERE id = ?').run(sessionId);
-  db.prepare('UPDATE executors SET stop = 1 WHERE session_id = ?').run(sessionId);
+  db.prepare('UPDATE executors SET stop = 1, stopped_reason = ?, stopped_at = ?, stopped_by = ? WHERE session_id = ?')
+    .run(reason, now, by, sessionId);
   bus.publish(`session:${sessionId}`);
 }
 
@@ -798,7 +810,7 @@ export function resumeAuto(sessionId: string): boolean {
   const canResume = Boolean(ex && ex.armed && ex.token_hash);
   db.prepare('UPDATE sessions SET auto_enabled = 1, outcome = NULL, outcome_note = NULL, updated_at = ? WHERE id = ?')
     .run(Date.now(), sessionId);
-  if (canResume) db.prepare('UPDATE executors SET stop = 0 WHERE session_id = ?').run(sessionId);
+  if (canResume) db.prepare('UPDATE executors SET stop = 0, stopped_reason = NULL, stopped_at = NULL, stopped_by = NULL WHERE session_id = ?').run(sessionId);
   bus.publish(`session:${sessionId}`);
   bus.publish('sessions');
   return canResume;
@@ -822,7 +834,7 @@ export function armExecutor(sessionId: string, code: string, target?: TargetInfo
   const token = randomBytes(32).toString('base64url');
   db.prepare(
     `UPDATE executors SET arm_hash = NULL, arm_expires = NULL, token_hash = ?, armed = 1, stop = 0,
-       last_seen = ?, host = ?, ps_version = ?, elevated = ? WHERE session_id = ?`,
+       last_seen = ?, host = ?, ps_version = ?, elevated = ?, stopped_reason = NULL, stopped_at = NULL, stopped_by = NULL WHERE session_id = ?`,
   ).run(
     sha(token),
     Date.now(),
@@ -892,7 +904,7 @@ export function redeemRearm(sessionId: string, token: string): string | null {
   const newToken = randomBytes(32).toString('base64url');
   db.prepare(
     `UPDATE executors SET rearm_token = NULL, rearm_expires = NULL, token_hash = ?, armed = 1, stop = 0,
-       last_seen = ? WHERE session_id = ?`,
+       last_seen = ?, stopped_reason = NULL, stopped_at = NULL, stopped_by = NULL WHERE session_id = ?`,
   ).run(sha(newToken), Date.now(), sessionId);
   db.prepare('UPDATE sessions SET persist = 0 WHERE id = ?').run(sessionId);
   bus.publish(`session:${sessionId}`);
@@ -908,7 +920,7 @@ export function redeemRearm(sessionId: string, token: string): string | null {
  * arming setup card instead. Re-arming clears stop as usual.
  */
 export function executorBye(sessionId: string): void {
-  db.prepare('UPDATE executors SET stop = 1 WHERE session_id = ?').run(sessionId);
+  db.prepare("UPDATE executors SET stop = 1, stopped_reason = 'agent_exit', stopped_at = ?, stopped_by = 'agent' WHERE session_id = ?").run(Date.now(), sessionId);
   bus.publish('sessions');
 }
 

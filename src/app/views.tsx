@@ -188,6 +188,9 @@ export interface SessionView {
   /** True when the approval gate is off for this session. */
   autoApprove?: boolean;
   persist?: boolean;
+  /** Auto-run was deliberately turned off, not merely disconnected. */
+  autoEnabled?: boolean;
+  stoppedReason?: string | null;
   target: { host: string | null; ps_version: string | null; elevated: boolean } | null;
 }
 
@@ -219,13 +222,26 @@ export function statusCard(session: Session, view: SessionView): string {
       </form>
     </div>`;
   }
-  // inactive: the window was closed or auto-run was stopped
+  // An explicit stop is different from a disconnected window. Say which one
+  // happened, so Copy agent cannot silently copy a 404 body.
+  if (!view.autoEnabled) {
+    const reason = view.stoppedReason === 'idle_cleanup' ? 'It was disabled by the server idle cleanup.'
+      : view.stoppedReason === 'agent_exit' ? 'The agent exited after it was stopped or its pause expired.'
+      : 'It was explicitly stopped.';
+    return `<div class="statuscard inactive">
+      <div class="grow">
+        <div class="sc-title">Auto-run is off</div>
+        <div class="sc-sub small muted">${reason}${targetLine ? ' Last seen on ' + targetLine + '.' : ''} Re-enable it before copying a new agent.</div>
+      </div>
+      <form method="post" action="/s/${esc(session.slug)}/autorun-enable" class="inline">
+        <button type="submit" class="sm primary">Re-enable auto-run</button>
+      </form>
+    </div>`;
+  }
   return `<div class="statuscard inactive">
     <div class="grow">
-      <div class="sc-title">Agent not connected</div>
-      <div class="sc-sub small muted">The PowerShell window was closed or auto-run was stopped${
-        targetLine ? '. Last seen on ' + targetLine : ''
-      }. Paste the agent again below to reconnect.</div>
+      <div class="sc-title">Agent disconnected</div>
+      <div class="sc-sub small muted">Auto-run remains enabled, but the PowerShell window was closed or the machine rebooted${targetLine ? '. Last seen on ' + targetLine : ''}. Paste the agent again below to reconnect.</div>
     </div>
   </div>`;
 }

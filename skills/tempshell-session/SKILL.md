@@ -55,7 +55,20 @@ Titles keep Unicode, but **your shell can mangle non-ASCII inside an inline
 `-d '{...}'` string**. If the title has Norwegian letters, pipe it instead so the
 bytes survive: `printf '%s' '{"title":"Arsoppgjor pa PCen"}' | curl ... --data-binary @-`.
 
-### 2. Turn on auto-run and relay the two codes
+### 2. Read status, then turn on auto-run only when needed
+
+**Always read status first — especially after a reboot or a cut-off wait.** Do not
+mint a replacement code blindly: re-arming an already armed agent discards its
+executor token and disconnects it.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/sessions/$SLUG/autorun"
+```
+
+- `state: "armed"`: it is already back. Do **not** POST; continue with commands.
+- `state: "waiting-to-arm"`: use its existing code if `arming_expires_in_seconds`
+  is positive; otherwise POST once below for a fresh code.
+- `state: "stopped"` or `"off"`: POST once below to re-enable and mint a code.
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -X POST \
@@ -197,6 +210,18 @@ session page shows a clear "Approvals are off" banner the whole time it is off, 
 
 Post as raw text and block for that command's own result. Prefer `tempshell-run.sh`: it
 posts as `text/plain` (no escaping) and waits for the reply, printing the JSON.
+
+**No Bash on the host? Use the native PowerShell helper instead.** It has the same
+options and matching-result behaviour, and avoids a host's WSL/Bash routing entirely:
+
+```powershell
+'Get-ChildItem "C:\Program Files" | Select-Object Name' |
+  & "$HOME\.claude\skills\tempshell-session\tempshell-run.ps1" $SLUG `
+    -Intent "List installed programs" -Why "Confirm the application path" -Quiet
+```
+
+Use this when `bash` reports a WSL `/bin/bash` failure. It runs **locally** in
+PowerShell; the command piped to it still runs only on the TempShell target.
 
 ```bash
 printf '%s' 'Get-ChildItem "C:\Program Files" | Select-Object Name' \

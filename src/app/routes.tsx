@@ -30,6 +30,8 @@ function sessionView(session: store.Session): SessionView {
     autoApprove: store.autoApproveOn(session.id),
     persist: Boolean(session.persist),
     target: ex?.host ? { host: ex.host, ps_version: ex.ps_version, elevated: Boolean(ex.elevated) } : null,
+    autoEnabled: Boolean(session.auto_enabled),
+    stoppedReason: ex?.stopped_reason ?? null,
   };
 }
 
@@ -311,7 +313,15 @@ app.post('/s/:slug/autorun-stop', (c) => {
   const session = store.getSession(c.req.param('slug'));
   if (!session) return c.notFound();
   if (!canAccess(c, session)) return c.redirect('/');
-  store.haltAuto(session.id);
+  store.haltAuto(session.id, 'explicit_stop', currentUserId(c) === session.owner ? 'owner' : 'session_member');
+  return c.redirect(`/s/${session.slug}`);
+});
+
+app.post('/s/:slug/autorun-enable', (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session) return c.notFound();
+  if (!canAccess(c, session)) return c.redirect('/');
+  store.enableAuto(session.id);
   return c.redirect(`/s/${session.slug}`);
 });
 
@@ -658,6 +668,9 @@ api.get('/sessions/:slug/autorun', (c) => {
     enabled: Boolean(session.auto_enabled),
     armed: Boolean(ex?.armed) && !ex?.stop,
     stopped: Boolean(ex?.stop),
+    stopped_reason: ex?.stopped_reason ?? null,
+    stopped_at: ex?.stopped_at ?? null,
+    stopped_by: ex?.stopped_by ?? null,
     last_seen: ex?.last_seen ?? null,
     // Only meaningful before the agent arms; null once it has.
     arming_expires_in_seconds:
@@ -714,7 +727,7 @@ api.post('/sessions/:slug/approvals', async (c) => {
 api.post('/sessions/:slug/autorun/stop', (c) => {
   const session = ownedSession(c, c.get('uid'));
   if (!session) return c.json({ error: 'not found' }, 404);
-  store.haltAuto(session.id);
+  store.haltAuto(session.id, 'explicit_stop', 'api_token');
   return c.json({ ok: true });
 });
 
