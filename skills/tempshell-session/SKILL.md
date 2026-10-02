@@ -91,7 +91,23 @@ or do anything in it, just leave the window open.
 bash ~/.claude/skills/tempshell-session/tempshell-wait-arm.sh $SLUG
 ```
 
-It returns the moment the machine arms, and prints the
+**Run it in the foreground, in the same turn that hands over the arming code. Do not use
+`run_in_background`.** Some hosts end the shell when your turn ends, so a background wait
+can come back as `[killed]` with no notification, and nothing wakes you when one finishes.
+The script gives up after at most 9 minutes per call (override with a second argument,
+seconds) so it fits inside a tool timeout:
+
+- `"armed":true` and exit 0: it armed; read the target below.
+- `"still_waiting":true` and exit 2: not armed yet. If the arming code (15 minutes) is still
+  valid, run it again. Do not re-arm with a new code just because a wait ended.
+- `"gave_up":true`: 20 minutes passed; mint a fresh code with `POST .../autorun` and say so.
+
+You can also poll yourself instead of using the script: `GET $BASE/api/sessions/$SLUG/autorun`
+every few seconds until `"armed":true`. If a wait was cut off (killed, timed out, turn ended),
+**check that endpoint before doing anything else**, since the person may have armed in the
+meantime.
+
+When it returns, it prints the
 target it reported, so you learn the shell version and whether it is elevated
 *before* your first command. If `target.elevated` is false, say so: admin-only checks
 will fail, and offer to have the agent re-run in an elevated window. The
