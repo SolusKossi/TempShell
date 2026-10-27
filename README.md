@@ -1,6 +1,6 @@
 # TempShell
 
-Run commands on a Windows machine you have no shell on, by having someone there
+Let LLMs run commands on a Windows machine you have no shell on, by having someone there
 paste one PowerShell snippet into a terminal. An AI assistant then drives it:
 each command runs on the machine and the output comes back, one step at a time,
 with a plain note on every action and a human gate in front of anything risky.
