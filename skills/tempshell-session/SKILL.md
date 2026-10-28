@@ -123,7 +123,17 @@ meantime.
 When it returns, it prints the
 target it reported, so you learn the shell version and whether it is elevated
 *before* your first command. If `target.elevated` is false, say so: admin-only checks
-will fail, and offer to have the agent re-run in an elevated window. The
+will fail, and offer to have the agent re-run in an elevated window.
+
+**Never stop a working agent to swap it for an elevated one.** A non-elevated agent
+is still useful. First run everything that works without admin. Then ask whether
+an admin login is actually available (the person may not know the local admin
+password, and LAPS may have nothing stored). Only after the person confirms they can
+open an elevated window should you re-arm for it. On
+2026-10-28 an armed agent was stopped first, the person had no admin password, and
+the session was lost with none of the non-admin fixes done.
+
+The
 arming code lasts **15 minutes**; if it lapses before they arm, `POST .../autorun`
 again for a fresh one. If it has already lapsed, the agent says so in plain words
 ("arming code expired - ask Claude for a fresh one"), distinct from a mistyped code, so
