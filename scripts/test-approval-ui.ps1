@@ -11,8 +11,9 @@ function Assert($condition, [string]$message) { if (-not $condition) { throw $me
 $global:testCols = 100; $global:testRows = 30
 function Console-Size { return @{ cols = $global:testCols; rows = $global:testRows } }
 function Width { return [Math]::Min($global:testCols - 6, 132) }
-# Inject key events directly into the real handler, not the machine's keyboard.
-function Read-ApprovalKey {}
+# Inject a key queue at the console boundary; exercise the REAL input pump.
+$global:testKeys = New-Object 'System.Collections.Generic.Queue[System.ConsoleKey]'
+function Next-ApprovalKey { if ($global:testKeys.Count) { return $global:testKeys.Dequeue() }; return $null }
 function Capture-Frame {
   $writer = New-Object System.IO.StringWriter
   $previous = [Console]::Out
@@ -27,6 +28,7 @@ $body = @('Get-Service -Name w32time', 'Restart-Service -Name w32time') + @(1..2
 $held = [pscustomobject]@{ seq = 42; intent = 'Restart Windows Time'; why = 'The service is stopped; restore clock synchronization.'; body = ($body -join [char]10) }
 Show-Approval $held
 $global:approvalNotice = 'Choose A or D, then Enter. Esc cancels.'
+$global:approvalKeyboard = $true
 $frames = @()
 $first = Capture-Frame
 $spinBefore = $global:spin
@@ -51,6 +53,22 @@ Handle-ApprovalKey ([ConsoleKey]::Escape)
 Assert (-not $global:approvalSelection) 'Esc must clear selection'
 Handle-ApprovalKey ([ConsoleKey]::Enter)
 Assert ($global:approvalVisible) 'Enter alone must not decide'
+# A fast burst must be handled together, not replayed at one key per frame.
+foreach ($i in 1..150) {
+  foreach ($key in @([ConsoleKey]::A, [ConsoleKey]::D, [ConsoleKey]::PageDown, [ConsoleKey]::PageUp)) { $global:testKeys.Enqueue($key) }
+}
+$global:testKeys.Enqueue([ConsoleKey]::End)
+$global:testKeys.Enqueue([ConsoleKey]::A)
+$inputWatch = [Diagnostics.Stopwatch]::StartNew()
+Read-ApprovalKey
+$inputWatch.Stop()
+Assert ($global:testKeys.Count -eq 0) 'Burst keys are left queued to replay on later animation frames'
+Assert ($global:approvalSelection -eq 'approve') 'The final selection in a burst must win'
+Assert ($global:approvalScroll -eq $global:approvalMaxScroll) 'The final scroll position in a burst must win'
+Assert ($inputWatch.ElapsedMilliseconds -lt 2000) 'Input processing unexpectedly stalled'
+$burstMs = $inputWatch.ElapsedMilliseconds
+Handle-ApprovalKey ([ConsoleKey]::Escape)
+Handle-ApprovalKey ([ConsoleKey]::Home)
 Handle-ApprovalKey ([ConsoleKey]::PageDown)
 Assert ($global:approvalScroll -eq $global:approvalPageSize) 'PageDown should scroll by one page'
 Handle-ApprovalKey ([ConsoleKey]::End)
@@ -84,13 +102,32 @@ Assert ($reply.ok) 'Async decision POST failed'
 Assert ($global:spin -gt $spinBefore) 'Animation froze during the decision POST'
 Assert ($writer.ToString().Contains('Recording decision')) 'Submission state must be visible'
 # Exercise the real handler's success/failure paths without live session tokens.
-$global:postOK = $false; $global:lastDecision = $null
+$global:postOK = $false; $global:lastDecision = $null; $global:postCount = 0
 function Get-Async($url, $headers, $timeout, $method, $json) {
   $global:lastDecision = $json | ConvertFrom-Json
+  $global:postCount++
   return @{ ok = $global:postOK; code = 409 }
 }
-Handle-ApprovalKey ([ConsoleKey]::D)
-Handle-ApprovalKey ([ConsoleKey]::Enter)
+# Oversized stale typeahead stays discard-only across capped pump iterations;
+# even an Enter at the tail must not approve the current or next request.
+foreach ($i in 1..4096) { $global:testKeys.Enqueue([ConsoleKey]::A) }
+$global:testKeys.Enqueue([ConsoleKey]::Enter)
+$global:approvalDiscardPending = $true
+Read-ApprovalKey
+Assert ($global:testKeys.Count -eq 2049) 'A discard batch must remain bounded'
+Assert ($global:approvalDiscardPending) 'An oversized stale queue must stay discard-only'
+Read-ApprovalKey
+Read-ApprovalKey
+Assert ($global:testKeys.Count -eq 0) 'Stale queue was not fully discarded'
+Assert (-not $global:approvalDiscardPending) 'Discard state should clear after the queue is empty'
+Assert ($global:postCount -eq 0) 'Stale typeahead must never submit a decision'
+Assert (-not $global:approvalSelection) 'Discarded typeahead must not select approval'
+# Enter alone is inert. The first explicit D+Enter submits once; queued A+Enter
+# behind it must be discarded even if the submission fails and the modal stays.
+foreach ($key in @([ConsoleKey]::Enter, [ConsoleKey]::D, [ConsoleKey]::Enter, [ConsoleKey]::A, [ConsoleKey]::Enter)) { $global:testKeys.Enqueue($key) }
+Read-ApprovalKey
+Assert ($global:postCount -eq 1) 'A burst must not submit twice after a confirmation boundary'
+Assert ($global:testKeys.Count -eq 0) 'Post-confirmation typeahead must be discarded'
 Assert ($global:lastDecision.approve -eq $false) 'D+Enter must post a denial'
 Assert ($global:approvalVisible) 'Unconfirmed decision must keep the request visible'
 Assert (-not $global:approvalSelection) 'Failed decision must not retain a selection'
@@ -111,4 +148,4 @@ $hostText = & { Show-Approval $held } 6>&1 | Out-String
 Assert ($hostText.Contains('END_OF_COMMAND')) 'Plain fallback must show the complete command'
 Assert (-not $hostText.Contains(([string][char]27))) 'Plain fallback leaked ANSI controls'
 $frames | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $FramesPath -Encoding UTF8
-Write-Output 'Terminal popup checks passed (animation, layout, resize, scroll, confirmation, async POST, fallback).'
+Write-Output ('Terminal popup checks passed (animation, layout, resize, scroll, confirmation, async POST, fallback; 602-key burst: ' + $burstMs + ' ms).')

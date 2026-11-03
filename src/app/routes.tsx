@@ -1074,6 +1074,8 @@ $global:approvalVisible = $false
 $global:heldApproval = $null
 $global:approvalSelection = ''
 $global:approvalKeyboard = $true
+$global:approvalInputBatch = $false
+$global:approvalDiscardPending = $false
 $global:approvalBusy = $false
 $global:approvalCanConfirm = $true
 $global:approvalNotice = ''
@@ -1504,7 +1506,7 @@ function Console-Size {
 }
 function Approval-Notice([string]$text) {
   $global:approvalNotice = $text
-  if (-not $fancy) { Write-Host $text -ForegroundColor Yellow }
+  if (-not $fancy -and -not $global:approvalInputBatch) { Write-Host $text -ForegroundColor Yellow }
 }
 function Clear-Approval {
   if (-not $global:approvalVisible) { return }
@@ -1533,7 +1535,7 @@ function Show-Approval($held) {
     Write-Host 'A = Approve, D = Deny, then Enter to confirm. Or decide on the web.' -ForegroundColor Yellow
   }
   # Discard keys typed before the request appeared. Enter alone is always inert.
-  try { while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) } } catch {
+  try { $global:approvalDiscardPending = -not (Discard-ApprovalKeys) } catch {
     $global:approvalKeyboard = $false
     Approval-Notice 'Console input unavailable. Decide on the web.'
   }
@@ -1614,12 +1616,45 @@ function Draw-Approval($sz) {
   Popup-Line ($top + $height - 2) $left $width $notice 220
   Popup-Rule ($top + $height - 1) $left $width ([char]0x2570) ([char]0x256F)
 }
+function Next-ApprovalKey {
+  if ([Console]::KeyAvailable) { return [Console]::ReadKey($true).Key }
+  return $null
+}
+function Discard-ApprovalKeys {
+  for ($i = 0; $i -lt 2048; $i++) { if ($null -eq (Next-ApprovalKey)) { return $true } }
+  return $false
+}
 function Read-ApprovalKey {
   if ($global:approvalBusy -or -not $global:approvalKeyboard -or -not $global:heldApproval) { return }
+  $noticeBefore = $global:approvalNotice
+  $global:approvalInputBatch = $true
   try {
-    if (-not [Console]::KeyAvailable) { return }
-    Handle-ApprovalKey ([Console]::ReadKey($true).Key)
+    if ($global:approvalDiscardPending) {
+      # An oversized stale queue is discarded across bounded updates. Do not
+      # interpret its tail as fresh input merely because one batch hit its cap.
+      $global:approvalDiscardPending = -not (Discard-ApprovalKeys)
+      return
+    }
+    # Drain a burst before the next render; one key per 110ms animation tick
+    # created a minutes-long replay queue after rapid typing or key-repeat.
+    # The bound still lets the UI/network progress under continuous input.
+    for ($i = 0; $i -lt 2048; $i++) {
+      $key = Next-ApprovalKey
+      if ($null -eq $key) { break }
+      $confirming = $key -eq [ConsoleKey]::Enter -and [bool]$global:approvalSelection
+      Handle-ApprovalKey $key
+      if ($confirming -or -not $global:heldApproval) {
+        # A confirmation ends this batch. Never replay typeahead into a retry
+        # or a different request, including keys typed during the HTTP POST.
+        $global:approvalDiscardPending = -not (Discard-ApprovalKeys)
+        break
+      }
+    }
   } catch { $global:approvalKeyboard = $false; Approval-Notice 'Console input unavailable. Decide on the web.' }
+  finally {
+    $global:approvalInputBatch = $false
+    if (-not $fancy -and $global:heldApproval -and $global:approvalNotice -ne $noticeBefore) { Write-Host $global:approvalNotice -ForegroundColor Yellow }
+  }
 }
 function Handle-ApprovalKey($key) {
   if ($global:approvalBusy -or -not $global:heldApproval) { return }
