@@ -11,6 +11,32 @@ no shell on.
 and sends the output back by itself, so you are never waiting on a human to copy and
 paste. A session turns this on the moment it is created; everything below assumes it.
 
+## Session lifetime: the user decides when to disconnect
+
+**Keep the session connected until the user explicitly asks to stop or disconnect.**
+Finishing a command, fixing the apparent problem, reaching the end of your plan,
+waiting for a reply, or ending your chat turn is NOT permission to close a session.
+A successful step is not the end of the user's work; follow-up work should reuse
+this same session without another paste or arming code.
+
+- Do not call `/autorun/stop`, close the session, disable auto-run, or terminate the
+  target agent as automatic cleanup, including in a script's `finally` or exit trap.
+- Do not call `/complete` just because you think the task is finished. Summarize
+  what you achieved in chat and leave the connection ready for the next request.
+- Stop only on an explicit user request such as "disconnect TempShell", "close this
+  session", or "stop the agent". "That fixed it", "thanks", "done", a topic change,
+  or silence does not authorize disconnection. If intent is unclear, leave it open.
+- Never delete a session or its history unless the user explicitly asks to delete
+  it. Permission to disconnect is not permission to delete.
+- If a duplicate or apparently unused session exists, tell the user; do not stop
+  or delete it without their permission.
+- If you accidentally stopped the agent, try `/autorun/resume` on the same session
+  immediately, then check status. Ask for another paste only if it cannot resume.
+
+This is a rule for assistant-initiated actions, not a request to bypass the user's
+Stop button, Ctrl+C, session expiry, or the server's existing safety timeouts.
+Do not post keep-alive commands to defeat those safeguards.
+
 ## The default loop (auto-run)
 
 **It executes your commands on the target machine with no per-command
@@ -43,7 +69,8 @@ job), do NOT create another. An expired arming code does not kill the session:
 `POST .../autorun` on the existing slug returns a fresh arming code with the same
 `join_url`, so the person only pastes the agent again. Only create a new session for a
 different machine or job. Before creating one, check the slug you already hold.
-If a duplicate session exists, stop it with `POST .../autorun/stop`.
+If a duplicate session exists, keep using the working session and tell the user.
+Do not stop either session unless the user explicitly asks.
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json'   -d '{"title":"Intune sync on the test PC"}'   "$BASE/api/sessions"
@@ -293,10 +320,14 @@ One caveat worth knowing:
 > Windows path or a format string. (`tempshell-run.sh` reads the whole body literally, so
 > the only place this bites is how *you* feed it.)
 
-### 6. Say when the task is finished
+### 6. Report progress; leave the session connected
 
-When the work is done, mark it complete so the page says so. Without this a finished
-run just looks like the agent vanished, which reads as a failure:
+When a step or the apparent task is finished, summarize what was achieved in chat.
+Leave auto-run armed and the same session ready for follow-up work. Do not turn a
+successful result into automatic session cleanup, and do not ask the user to paste
+another agent just because you finished your current plan.
+
+Only if the user explicitly asks to mark the task complete, record a short note:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -304,7 +335,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   "$BASE/api/sessions/$SLUG/complete"
 ```
 
-The note is one line: what was actually achieved. Then stop auto-run.
+`/complete` only sets the task's outcome label; it does not disconnect the agent.
+Do not follow it with `/autorun/stop` unless the user also asked to disconnect.
+Marking a task complete, stopping its connection, and deleting its history are
+separate actions with separate user authorization.
 
 ## Reading auto-run results
 
@@ -412,7 +446,11 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/sessions/$SLUG/autorun"
   there while the agent is armed and `last_seen` is advancing, it is genuinely stuck;
   say so rather than waiting silently.
 
-### Turning it off
+### Turning it off: only at the user's explicit request
+
+Use this only after the user asks to stop or disconnect this session. Never call
+it because you consider the task finished, while awaiting a follow-up, or as routine
+cleanup. A request to stop a command or service is not a request to stop TempShell.
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -X POST \
@@ -421,8 +459,9 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST \
 
 The agent sees the stop on its next poll. It does **not** vanish: it holds a paused
 screen for about five minutes (the person at the machine sees a countdown, not a wall
-of code), and only then signs off with a closing screen. Always stop auto-run when you
-are done, so a machine is never left with a live unattended shell.
+of code), and only then signs off with a closing screen. Because the session becomes
+unavailable after that window, stopping is the user's decision, not the assistant's
+end-of-task housekeeping.
 
 **Reviving within the pause.** If you stopped too early, you can bring the same session
 back without a re-arm, as long as you are inside that five-minute window:
@@ -605,9 +644,11 @@ and serial numbers.
 - Prefer narrow queries over dumps: `Select-Object` the two fields you need rather
   than `*`.
 - When a machine belongs to someone else, keep to what the problem requires.
-- Sessions are purged after 30 days of inactivity, and an armed agent is disarmed
-  after 60 minutes idle: but do not rely on either. Delete a session when the job is
-  done, and `/autorun/stop` when you stop using it.
+- By default, sessions are purged after 30 days of inactivity, and an armed agent
+  is disarmed after 60 minutes without an agent heartbeat. These server safeguards
+  remain in place; they are not instructions to stop a connected session early.
+- Disconnect only when the user explicitly asks. Delete the session and its history
+  only when the user explicitly asks for deletion, not as end-of-task cleanup.
 
 ## Other endpoints
 

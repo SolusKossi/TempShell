@@ -28,6 +28,11 @@ https://github.com/user-attachments/assets/3f86498e-153f-4896-9595-642c4e61ba40
 Nobody types commands by hand. The person at the machine pastes once and can walk
 away; you talk to your assistant in plain language.
 
+**The session stays connected until you ask to disconnect.** Finishing a step or
+fixing the apparent problem is not permission for the assistant to stop the agent,
+close the session, or delete its history. Follow-up work reuses the same connection.
+The assistant skill makes this explicit; existing server safety timeouts still apply.
+
 ## Fastest setup: let your assistant do it
 
 You do not have to follow the steps below by hand. Paste this into Claude Code,

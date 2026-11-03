@@ -82,6 +82,19 @@ assert.equal((await poll()).stop, true);
 assert.equal((await decide(stopHeld.seq, true)).status, 409, 'stopped agents cannot approve');
 store.resumeAuto(s.id);
 
+// Reporting a completed task must not disconnect the session or require re-arming.
+const completed = await app.request(`/api/sessions/${s.slug}/complete`, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer assistant-token', 'content-type': 'application/json' },
+  body: JSON.stringify({ note: 'First task finished; keep the connection for follow-up.' }),
+});
+assert.equal(completed.status, 200);
+assert.equal(store.getExecutor(s.id).stop, 0, 'completion is not a stop request');
+assert.equal(store.getSession(s.slug).auto_enabled, 1);
+const followup = store.addEntry(s.id, 'claude', 'command', 'Get-Date', 'powershell');
+assert.equal((await poll()).seq, followup.seq, 'same executor token accepts follow-up work after completion');
+store.markCommandDone(s.id, followup.seq);
+
 // Validate the actual generated script with the Windows PowerShell 5.1 parser.
 const agentResponse = await app.request(`/x/${s.slug}/agent.ps1`, { headers: { cookie } });
 assert.equal(agentResponse.status, 200);
