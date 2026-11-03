@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 // Isolated databases and fake credentials: never use a configured live instance.
 const dir = mkdtempSync(join(tmpdir(), 'tempshell-approvals-'));
@@ -107,5 +109,30 @@ writeFileSync(agentFile, '\uFEFF' + agent, 'utf8');
 if (process.platform === 'win32') {
   const parser = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile('${agentFile.replaceAll("'", "''")}',[ref]$t,[ref]$e) | Out-Null; if($e.Count){$e | Format-List; exit 1}`], { encoding: 'utf8' });
   assert.equal(parser.status, 0, parser.stdout + parser.stderr);
+  const received = [];
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    received.push({ method: req.method, body });
+    setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); }, 450);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const framesPath = join(dir, 'terminal-frames.json');
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('./test-approval-ui.ps1', import.meta.url)), '-AgentPath', agentFile, '-FramesPath', framesPath, '-TestUrl', `http://127.0.0.1:${server.address().port}/decision`]);
+      let output = '';
+      child.stdout.on('data', chunk => output += chunk);
+      child.stderr.on('data', chunk => output += chunk);
+      child.on('error', reject);
+      child.on('close', code => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+    assert.deepEqual(received, [{ method: 'POST', body: '{"approve":true}' }]);
+    const frames = JSON.parse(readFileSync(framesPath, 'utf8').replace(/^\uFEFF/, ''));
+    assert.ok(frames.length >= 8, 'real terminal render fixtures were captured');
+    console.log(result.output.trim());
+    console.log(`Terminal render fixtures: ${framesPath}`);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 }
 console.log('Approval regression checks passed (auth, races, denial replies, legacy clients, queue, stop, generated agent).');

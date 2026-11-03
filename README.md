@@ -58,8 +58,10 @@ If you would rather do it yourself, the manual steps are below.
   back afterward, not a wall of PowerShell.
 - **Risky commands wait for approval in both places.** Anything that changes the
   machine, a service restart, a delete, a registry write, is held until someone
-  approves on the web panel or in the target PowerShell console. The console shows
-  the full command and its intent: press **A** to approve or **D** to deny, then
+  approves on the web panel or in the target PowerShell console. Animated terminals
+  show an inset approval popup over the live ASCII dashboard, without leaving it.
+  Use **Up/Down** or **Page Up/Page Down** to scroll the full request and command.
+  Press **A** to approve or **D** to deny, then
   **Enter** to confirm (**Esc** cancels the selection). Decide in either place;
   the first decision wins and clears the other prompt. Read-only checks still run.
   Who approved, and when, is recorded. On a test box you can turn approvals off per

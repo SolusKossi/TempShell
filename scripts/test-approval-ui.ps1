@@ -1,0 +1,112 @@
+param([string]$AgentPath, [string]$FramesPath, [string]$TestUrl)
+$ErrorActionPreference = 'Stop'
+# Load only the generated agent's initialization and functions, never arm or run
+# the main loop. All terminal output is our own StringWriter, not a screen grab.
+$source = Get-Content -LiteralPath $AgentPath -Raw -Encoding UTF8
+$start = $source.IndexOf('& {') + 3
+$end = $source.IndexOf('# ---- arm (on a clean alternate screen when fancy)')
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+$ErrorActionPreference = 'Stop'
+function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+$global:testCols = 100; $global:testRows = 30
+function Console-Size { return @{ cols = $global:testCols; rows = $global:testRows } }
+function Width { return [Math]::Min($global:testCols - 6, 132) }
+# Inject key events directly into the real handler, not the machine's keyboard.
+function Read-ApprovalKey {}
+function Capture-Frame {
+  $writer = New-Object System.IO.StringWriter
+  $previous = [Console]::Out
+  try { [Console]::SetOut($writer); Draw } finally { [Console]::SetOut($previous) }
+  return $writer.ToString()
+}
+$fancy = $true
+$global:inAlt = $true
+$hostName = 'TEST-PC'; $userName = 'Martin'; $title = 'Investigate time sync'
+$instance = 'c.313b.be'; $state = 'waiting'
+$body = @('Get-Service -Name w32time', 'Restart-Service -Name w32time') + @(1..24 | ForEach-Object { 'Write-Output "Diagnostic line ' + $_ + '"' }) + 'Write-Output "END_OF_COMMAND"'
+$held = [pscustomobject]@{ seq = 42; intent = 'Restart Windows Time'; why = 'The service is stopped; restore clock synchronization.'; body = ($body -join [char]10) }
+Show-Approval $held
+$global:approvalNotice = 'Choose A or D, then Enter. Esc cancels.'
+$frames = @()
+$first = Capture-Frame
+$spinBefore = $global:spin
+$second = Capture-Frame
+Assert ($global:spin -gt $spinBefore) 'Animation must advance while approval is visible'
+Assert ($first -ne $second) 'Consecutive pending-approval frames must animate'
+Assert ($second.Contains('APPROVAL NEEDED')) 'Popup title missing'
+Assert ($second.Contains('Restart Windows Time')) 'Request intent missing'
+Assert ($second.Contains('ready for the next step')) 'Dashboard must still render behind the popup'
+Assert ($global:inAlt) 'Approval must not leave the alternate screen'
+Assert (-not $second.Contains('[?1049l')) 'Approval switched to the plain screen'
+Assert (-not $second.Contains('[?1049h')) 'Approval restarted the alternate screen'
+$frames += @{ name = 'pending'; cols = 100; rows = 30; ansi = $first + $second }
+Handle-ApprovalKey ([ConsoleKey]::A)
+Assert ($global:approvalSelection -eq 'approve') 'A must select approve'
+$selected = Capture-Frame
+Assert ($selected.Contains('[48;5;40m')) 'Approve selection must be highlighted'
+$frames += @{ name = 'selected'; cols = 100; rows = 30; ansi = $selected }
+Handle-ApprovalKey ([ConsoleKey]::Escape)
+Assert (-not $global:approvalSelection) 'Esc must clear selection'
+Handle-ApprovalKey ([ConsoleKey]::Enter)
+Assert ($global:approvalVisible) 'Enter alone must not decide'
+Handle-ApprovalKey ([ConsoleKey]::PageDown)
+Assert ($global:approvalScroll -eq $global:approvalPageSize) 'PageDown should scroll by one page'
+Handle-ApprovalKey ([ConsoleKey]::End)
+$tail = Capture-Frame
+Assert ($tail.Contains('END_OF_COMMAND')) 'The entire command must remain accessible'
+Assert ($global:approvalScroll -eq $global:approvalMaxScroll) 'End must reach the last line'
+$frames += @{ name = 'scrolled'; cols = 100; rows = 30; ansi = $tail }
+Handle-ApprovalKey ([ConsoleKey]::Home)
+Assert ($global:approvalScroll -eq 0) 'Home must return to the start'
+foreach ($size in @(@(80,25), @(48,16), @(32,12), @(160,45))) {
+  $global:testCols = $size[0]; $global:testRows = $size[1]
+  $renderedFrame = Capture-Frame
+  foreach ($cursor in [regex]::Matches($renderedFrame, ([char]27 + '\[(\d+);(\d+)H'))) {
+    Assert ([int]$cursor.Groups[1].Value -le $global:testRows) 'Popup draws below the viewport'
+    Assert ([int]$cursor.Groups[2].Value -le $global:testCols) 'Popup draws beyond the viewport width'
+  }
+  $frames += @{ name = ('resized-' + $size[0] + 'x' + $size[1]); cols = $size[0]; rows = $size[1]; ansi = $renderedFrame }
+}
+$global:testCols = 100; $global:testRows = 30
+$null = Capture-Frame
+# Real async HTTP POST against a disposable loopback server, with a deliberate
+# delay. Buffer output and assert the popup continues animating during submission.
+$global:approvalBusy = $true
+$spinBefore = $global:spin
+$writer = New-Object System.IO.StringWriter; $previous = [Console]::Out
+try {
+  [Console]::SetOut($writer)
+  $reply = Get-Async $TestUrl @{} 6 'POST' '{"approve":true}'
+} finally { [Console]::SetOut($previous); $global:approvalBusy = $false }
+Assert ($reply.ok) 'Async decision POST failed'
+Assert ($global:spin -gt $spinBefore) 'Animation froze during the decision POST'
+Assert ($writer.ToString().Contains('Recording decision')) 'Submission state must be visible'
+# Exercise the real handler's success/failure paths without live session tokens.
+$global:postOK = $false; $global:lastDecision = $null
+function Get-Async($url, $headers, $timeout, $method, $json) {
+  $global:lastDecision = $json | ConvertFrom-Json
+  return @{ ok = $global:postOK; code = 409 }
+}
+Handle-ApprovalKey ([ConsoleKey]::D)
+Handle-ApprovalKey ([ConsoleKey]::Enter)
+Assert ($global:lastDecision.approve -eq $false) 'D+Enter must post a denial'
+Assert ($global:approvalVisible) 'Unconfirmed decision must keep the request visible'
+Assert (-not $global:approvalSelection) 'Failed decision must not retain a selection'
+$frames += @{ name = 'unconfirmed'; cols = 100; rows = 30; ansi = (Capture-Frame) }
+$global:postOK = $true
+Handle-ApprovalKey ([ConsoleKey]::A)
+Handle-ApprovalKey ([ConsoleKey]::Enter)
+Assert ($global:lastDecision.approve -eq $true) 'A+Enter must post approval'
+Assert (-not $global:approvalVisible) 'Confirmed decision must dismiss the popup'
+Assert ($global:inAlt) 'Dismissing a popup must preserve the dashboard buffer'
+$cleared = Capture-Frame
+Assert (-not $cleared.Contains('APPROVAL NEEDED')) 'Dismissed popup remains visible'
+Assert ($cleared.Contains('[2J')) 'Dismissal must erase popup/shadow remnants'
+$frames += @{ name = 'cleared'; cols = 100; rows = 30; ansi = $cleared }
+# Plain terminals must still show readable full text, not raw ANSI drawing.
+$fancy = $false
+$hostText = & { Show-Approval $held } 6>&1 | Out-String
+Assert ($hostText.Contains('END_OF_COMMAND')) 'Plain fallback must show the complete command'
+Assert (-not $hostText.Contains(([string][char]27))) 'Plain fallback leaked ANSI controls'
+$frames | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $FramesPath -Encoding UTF8
+Write-Output 'Terminal popup checks passed (animation, layout, resize, scroll, confirmation, async POST, fallback).'

@@ -1055,7 +1055,7 @@ $fancy = $false
 if ($env:WT_SESSION) { $fancy = $true } elseif ($PSVersionTable.PSVersion.Major -ge 7) { $fancy = $true }
 
 # ---- ansi helpers ------------------------------------------------------------
-function Put($s) { [Console]::Write($s) }
+function Put($s) { if ($null -ne $global:drawBuffer) { $null = $global:drawBuffer.Append([string]$s) } else { [Console]::Write($s) } }
 function At($r, $c) { return $E + '[' + $r + ';' + $c + 'H' }
 function Col($n) { return $E + '[38;5;' + $n + 'm' }
 $RST = $E + '[0m'
@@ -1074,6 +1074,17 @@ $global:approvalVisible = $false
 $global:heldApproval = $null
 $global:approvalSelection = ''
 $global:approvalKeyboard = $true
+$global:approvalBusy = $false
+$global:approvalCanConfirm = $true
+$global:approvalNotice = ''
+$global:approvalScroll = 0
+$global:approvalPageSize = 1
+$global:approvalMaxScroll = 0
+$global:approvalLines = @()
+$global:approvalWrapWidth = 0
+$global:approvalScreenSize = ''
+$global:approvalNeedsClear = $false
+$global:drawBuffer = $null
 
 # Visible length: box math must ignore ANSI colour codes, or a coloured value
 # counts hundreds of escape chars and blows past the column width.
@@ -1203,10 +1214,25 @@ function StatusText {
 
 $PT = 9
 function Draw {
-  if ($global:approvalVisible) { Read-ApprovalKey; return }
+  if ($global:approvalVisible) { Read-ApprovalKey }
   if (-not $fancy) { return }
+  $global:drawBuffer = New-Object System.Text.StringBuilder
+  try {
+  if ($global:approvalNeedsClear) { Put ($E + '[2J'); $global:approvalNeedsClear = $false }
+  $sz = Console-Size
+  if ($global:approvalVisible) {
+    $sizeKey = [string]$sz.cols + ':' + [string]$sz.rows
+    if ($sizeKey -ne $global:approvalScreenSize) { Put ($E + '[2J'); $global:approvalScreenSize = $sizeKey }
+  }
   $global:frame++
   $dot = $SP[$global:spin % $SP.Count]; $global:spin++
+  if ($global:approvalVisible -and ($sz.cols -lt 76 -or $sz.rows -lt 25)) {
+    # A short/narrow terminal cannot fit the full dashboard. Keep a live compact
+    # backdrop, and keep every popup coordinate inside the actual viewport.
+    Put (At 1 2); Put ((Col 141) + (Clamp ('TempShell ' + $dot + ' connected') ($sz.cols - 3)) + $RST + $EL)
+    Draw-Approval $sz
+    return
+  }
   $st = StatusText
   # One steady colour per state. An animated border reads as a flash, not as life.
   $bcol = 92; if ($state -eq 'paused') { $bcol = 98 } elseif ($state -eq 'stopped') { $bcol = 240 }
@@ -1259,6 +1285,14 @@ function Draw {
     Put ((Col 141) + 'Revive from Claude to keep going, or Ctrl+C to close now.' + $RST + $EL)
   } else {
     Put ((Col 240) + 'Ctrl+C to stop' + $RST + $EL)
+  }
+  if ($global:approvalVisible) { Draw-Approval $sz }
+  } finally {
+    # Compose the dashboard and its opaque popup before writing a single frame:
+    # never flash the underlying dashboard through the popup between redraws.
+    $frameText = $global:drawBuffer.ToString()
+    $global:drawBuffer = $null
+    [Console]::Write($frameText)
   }
 }
 
@@ -1388,23 +1422,25 @@ function Invoke-Cmd($cmd, $limit, $asJson) {
   return @{ stdout = "$so"; stderr = "$se"; exit_code = $(if ($null -ne $lec) { [int]$lec } else { $null }); status = $status; had = $hadErr; ms = $sw.ElapsedMilliseconds; errors = $errRecords; data = $data }
 }
 
-# Run an HTTP GET in its own runspace, drawing at a steady rate while it is in
+# Run an HTTP request in its own runspace, drawing at a steady rate while it is in
 # flight. The dashboard used to redraw only when a long poll returned, so idle
 # animation stuttered while a running command animated smoothly; now every state
 # advances at the same cadence regardless of what the network is doing.
-function Get-Async($url, $hdr, $timeoutSec) {
+function Get-Async($url, $hdr, $timeoutSec, $method = 'GET', $body = $null) {
   $ps = [PowerShell]::Create()
   $null = $ps.AddScript({
-    param($u, $h, $t)
+    param($u, $h, $t, $m, $b)
     try {
-      $wr = Invoke-WebRequest $u -Headers $h -TimeoutSec $t -UseBasicParsing
+      $request = @{ Uri = $u; Headers = $h; TimeoutSec = $t; UseBasicParsing = $true; Method = $m; ErrorAction = 'Stop' }
+      if ($m -eq 'POST') { $request.ContentType = 'application/json'; $request.Body = $b }
+      $wr = Invoke-WebRequest @request
       return @{ ok = $true; text = [System.Text.Encoding]::UTF8.GetString($wr.RawContentStream.ToArray()) }
     } catch {
       $code = 0
       try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
       return @{ ok = $false; code = $code }
     }
-  }).AddArgument($url).AddArgument($hdr).AddArgument($timeoutSec)
+  }).AddArgument($url).AddArgument($hdr).AddArgument($timeoutSec).AddArgument($method).AddArgument($body)
   $res = $null
   try {
     $h = $ps.BeginInvoke()
@@ -1422,61 +1458,147 @@ function Idle($ms) {
   while ((Get-Date) -lt $until) { Draw; Start-Sleep -Milliseconds 110 }
 }
 
-# Never block on Read-Host: web decisions and independent read-only work must
-# still flow. The capable poll refreshes the request; keys are read during redraw.
-# Use the normal buffer so the complete command can be scrolled, not truncated.
+# A terminal modal, painted over the still-animated dashboard in the SAME
+# alternate buffer. Never leave that buffer just to ask for approval.
 function Approval-Text([string]$s) { return ($s -replace '[\x00-\x08\x0B-\x1F\x7F-\x9F]', '') }
+function Console-Size {
+  $cols = 100; $rows = 30
+  try { if ([Console]::WindowWidth -gt 0) { $cols = [Console]::WindowWidth }; if ([Console]::WindowHeight -gt 0) { $rows = [Console]::WindowHeight } } catch {}
+  return @{ cols = $cols; rows = $rows }
+}
+function Approval-Notice([string]$text) {
+  $global:approvalNotice = $text
+  if (-not $fancy) { Write-Host $text -ForegroundColor Yellow }
+}
 function Clear-Approval {
   if (-not $global:approvalVisible) { return }
   $global:approvalVisible = $false
   $global:heldApproval = $null
   $global:approvalSelection = ''
-  if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); Put ($E + '[?25l'); $global:inAlt = $true }
+  $global:approvalNeedsClear = $true
+  $global:approvalScreenSize = ''
 }
 function Show-Approval($held) {
   if ($global:heldApproval -and $global:heldApproval.seq -eq $held.seq) { return }
   $global:heldApproval = $held
   $global:approvalVisible = $true
   $global:approvalSelection = ''
+  $global:approvalNotice = 'Choose A or D, then Enter. Esc cancels.'
   $global:approvalKeyboard = $true
-  if ($fancy -and $global:inAlt) {
-    Put ($E + '[?25h'); Put ($E + '[?1049l'); $global:inAlt = $false
+  $global:approvalScroll = 0
+  $global:approvalWrapWidth = 0
+  if (-not $fancy) {
+    Write-Host ''
+    Write-Host ('=== APPROVAL NEEDED - command #' + $held.seq + ' ===') -ForegroundColor Yellow
+    Write-Host (Approval-Text ([string]$held.intent)) -ForegroundColor White
+    if ($held.why) { Write-Host ('Why: ' + (Approval-Text ([string]$held.why))) }
+    Write-Host 'Full command:' -ForegroundColor Yellow
+    Write-Host (Approval-Text ([string]$held.body))
+    Write-Host 'A = Approve, D = Deny, then Enter to confirm. Or decide on the web.' -ForegroundColor Yellow
   }
-  Write-Host ''
-  Write-Host ('=== APPROVAL NEEDED - command #' + $held.seq + ' ===') -ForegroundColor Yellow
-  Write-Host (Approval-Text ([string]$held.intent)) -ForegroundColor White
-  if ($held.why) { Write-Host ('Why: ' + (Approval-Text ([string]$held.why))) }
-  Write-Host 'Full command:' -ForegroundColor Yellow
-  Write-Host (Approval-Text ([string]$held.body))
-  Write-Host ''
-  Write-Host 'A = Approve, D = Deny, then Enter to confirm. Or decide on the web.' -ForegroundColor Yellow
-  Write-Host 'This command stays held until approved. Ctrl+C stops the agent.'
-  # Discard keys typed before this request became visible. Enter alone is inert.
+  # Discard keys typed before the request appeared. Enter alone is always inert.
   try { while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) } } catch {
     $global:approvalKeyboard = $false
-    Write-Host 'Console input unavailable. Approve or deny on the web.' -ForegroundColor Yellow
+    Approval-Notice 'Console input unavailable. Decide on the web.'
   }
 }
+function Approval-Wrap([string]$text, [int]$width) {
+  foreach ($line in ((Approval-Text $text) -split [char]10)) {
+    while ($line.Length -gt $width) { $line.Substring(0, $width); $line = $line.Substring($width) }
+    $line
+  }
+}
+function Popup-Line($row, $left, $width, [string]$text, $colour = 253) {
+  $inner = $width - 4
+  $text = Clamp $text $inner
+  Put (At $row $left)
+  Put ($E + '[48;5;234m' + (Col 214) + [char]0x2502 + ' ' + (Col $colour) + $text)
+  Put ((' ' * [Math]::Max(0, $inner - (VisLen $text))) + ' ' + (Col 214) + [char]0x2502 + $RST)
+}
+function Popup-Rule($row, $left, $width, [char]$first, [char]$last) {
+  Put (At $row $left)
+  Put ($E + '[48;5;234m' + (Col 214) + $first + (([string][char]0x2500) * ($width - 2)) + $last + $RST)
+}
+function Draw-Approval($sz) {
+  $width = [Math]::Min(82, $sz.cols - 16)
+  $height = [Math]::Min(12, $sz.rows - 4)
+  # Very tiny windows retain safe controls without drawing outside the viewport.
+  if ($width -lt 24 -or $height -lt 8) {
+    $global:approvalCanConfirm = $false
+    Put (At 2 1); Put ((Col 214) + (Clamp 'Approval needed: use web' ($sz.cols - 1)) + $RST + $EL)
+    return
+  }
+  $global:approvalCanConfirm = $true
+  $left = [int][Math]::Floor(($sz.cols - $width) / 2) + 1
+  $top = [Math]::Min(9, $sz.rows - $height - 1)
+  $inner = $width - 4
+  $count = $height - 7
+  if ($inner -ne $global:approvalWrapWidth) {
+    $held = $global:heldApproval
+    $global:approvalLines = @(Approval-Wrap ('Request: ' + [string]$held.intent) $inner)
+    if ($held.why) { $global:approvalLines += @(Approval-Wrap ('Why: ' + [string]$held.why) $inner) }
+    $global:approvalLines += 'COMMAND (not run):'
+    $global:approvalLines += @(Approval-Wrap ([string]$held.body) $inner)
+    $global:approvalWrapWidth = $inner
+  }
+  $global:approvalPageSize = $count
+  $global:approvalMaxScroll = [Math]::Max(0, $global:approvalLines.Count - $count)
+  $global:approvalScroll = [Math]::Max(0, [Math]::Min($global:approvalScroll, $global:approvalMaxScroll))
+  # A subtle offset shadow and an opaque surface: no screen-buffer switch.
+  for ($i = 1; $i -lt $height; $i++) {
+    Put (At ($top + $i) ($left + 2)); Put ($E + '[48;5;232m' + (' ' * $width) + $RST)
+  }
+  Popup-Rule $top $left $width ([char]0x256D) ([char]0x256E)
+  $spinner = $SP[$global:spin % $SP.Count]
+  Popup-Line ($top + 1) $left $width ($BOLD + $spinner + ' APPROVAL NEEDED  #' + $global:heldApproval.seq + $RST + $E + '[48;5;234m') 220
+  Popup-Rule ($top + 2) $left $width ([char]0x251C) ([char]0x2524)
+  for ($i = 0; $i -lt $count; $i++) {
+    $index = $global:approvalScroll + $i
+    $line = ''; if ($index -lt $global:approvalLines.Count) { $line = $global:approvalLines[$index] }
+    Popup-Line ($top + 3 + $i) $left $width $line
+  }
+  $range = ('{0}-{1}/{2}' -f ($global:approvalScroll + 1), [Math]::Min($global:approvalScroll + $count, $global:approvalLines.Count), $global:approvalLines.Count)
+  $scrollHint = $range + '  Up/Down PgUp/PgDn'
+  if ($global:approvalMaxScroll -eq 0) { $scrollHint = 'Full request shown. Also on the web.' }
+  Popup-Line ($top + $height - 4) $left $width $scrollHint 244
+  $yes = (Col 40) + '[A] Approve'; $no = (Col 203) + '[D] Deny'
+  if ($global:approvalSelection -eq 'approve') { $yes = $E + '[48;5;40m' + (Col 16) + '[A] APPROVE' + $E + '[48;5;234m' }
+  if ($global:approvalSelection -eq 'deny') { $no = $E + '[48;5;203m' + (Col 16) + '[D] DENY' + $E + '[48;5;234m' }
+  Popup-Line ($top + $height - 3) $left $width ($yes + '   ' + $no + (Col 244) + '   Enter confirms')
+  $notice = $global:approvalNotice
+  if ($global:approvalBusy) { $notice = 'Recording decision ' + $spinner }
+  Popup-Line ($top + $height - 2) $left $width $notice 220
+  Popup-Rule ($top + $height - 1) $left $width ([char]0x2570) ([char]0x256F)
+}
 function Read-ApprovalKey {
-  if (-not $global:approvalKeyboard -or -not $global:heldApproval) { return }
+  if ($global:approvalBusy -or -not $global:approvalKeyboard -or -not $global:heldApproval) { return }
   try {
     if (-not [Console]::KeyAvailable) { return }
-    $key = [Console]::ReadKey($true)
-    if ($key.Key -eq [ConsoleKey]::A) { $global:approvalSelection = 'approve'; Write-Host 'Approve selected. Enter to confirm, Esc to cancel.' -ForegroundColor Yellow }
-    elseif ($key.Key -eq [ConsoleKey]::D) { $global:approvalSelection = 'deny'; Write-Host 'Deny selected. Enter to confirm, Esc to cancel.' -ForegroundColor Yellow }
-    elseif ($key.Key -eq [ConsoleKey]::Escape) { $global:approvalSelection = ''; Write-Host 'Selection cancelled.' }
-    elseif ($key.Key -eq [ConsoleKey]::Enter -and $global:approvalSelection) {
-      $decision = @{ approve = ($global:approvalSelection -eq 'approve') } | ConvertTo-Json
-      $global:approvalSelection = ''
-      try {
-        Invoke-RestMethod "$base/x/$slug/decision/$($global:heldApproval.seq)" -Method Post -Headers $hdr -ContentType 'application/json' -Body $decision -TimeoutSec 6 -ErrorAction Stop | Out-Null
-        Write-Host 'Decision recorded.' -ForegroundColor Cyan
-        Clear-Approval
-      } catch {
-        Write-Host 'Decision not confirmed. It may already have been decided on the web; retry only if still held.' -ForegroundColor Yellow
-      }
-    }
-  } catch { $global:approvalKeyboard = $false; Write-Host 'Console input unavailable. Approve or deny on the web.' -ForegroundColor Yellow }
+    Handle-ApprovalKey ([Console]::ReadKey($true).Key)
+  } catch { $global:approvalKeyboard = $false; Approval-Notice 'Console input unavailable. Decide on the web.' }
+}
+function Handle-ApprovalKey($key) {
+  if ($global:approvalBusy -or -not $global:heldApproval) { return }
+  if ($key -eq [ConsoleKey]::A) { $global:approvalSelection = 'approve'; Approval-Notice 'Approve selected. Enter confirms; Esc cancels.' }
+  elseif ($key -eq [ConsoleKey]::D) { $global:approvalSelection = 'deny'; Approval-Notice 'Deny selected. Enter confirms; Esc cancels.' }
+  elseif ($key -eq [ConsoleKey]::Escape) { $global:approvalSelection = ''; Approval-Notice 'Selection cancelled. Choose A or D.' }
+  elseif ($key -eq [ConsoleKey]::DownArrow) { $global:approvalScroll = [Math]::Min($global:approvalMaxScroll, $global:approvalScroll + 1) }
+  elseif ($key -eq [ConsoleKey]::UpArrow) { $global:approvalScroll = [Math]::Max(0, $global:approvalScroll - 1) }
+  elseif ($key -eq [ConsoleKey]::PageDown) { $global:approvalScroll = [Math]::Min($global:approvalMaxScroll, $global:approvalScroll + $global:approvalPageSize) }
+  elseif ($key -eq [ConsoleKey]::PageUp) { $global:approvalScroll = [Math]::Max(0, $global:approvalScroll - $global:approvalPageSize) }
+  elseif ($key -eq [ConsoleKey]::Home) { $global:approvalScroll = 0 }
+  elseif ($key -eq [ConsoleKey]::End) { $global:approvalScroll = $global:approvalMaxScroll }
+  elseif ($key -eq [ConsoleKey]::Enter -and $global:approvalSelection) {
+    if ($fancy -and -not $global:approvalCanConfirm) { Approval-Notice 'Enlarge the window or decide on the web.'; return }
+    $decision = @{ approve = ($global:approvalSelection -eq 'approve') } | ConvertTo-Json
+    $global:approvalSelection = ''
+    $global:approvalBusy = $true
+    try {
+      # Keep drawing the popup, logo and heartbeat even while the POST is in flight.
+      $sent = Get-Async "$base/x/$slug/decision/$($global:heldApproval.seq)" $hdr 6 'POST' $decision
+      if ($sent.ok) { Clear-Approval } else { Approval-Notice 'Not confirmed. Refreshing; web may have decided.' }
+    } finally { $global:approvalBusy = $false }
+  }
 }
 
 # ---- arm (on a clean alternate screen when fancy) ----------------------------
