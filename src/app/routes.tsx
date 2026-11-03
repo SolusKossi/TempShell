@@ -1085,6 +1085,8 @@ $global:approvalWrapWidth = 0
 $global:approvalScreenSize = ''
 $global:approvalNeedsClear = $false
 $global:drawBuffer = $null
+$global:approvalOcclusion = $null
+$global:frameCols = 100
 
 # Visible length: box math must ignore ANSI colour codes, or a coloured value
 # counts hundreds of escape chars and blows past the column width.
@@ -1130,17 +1132,50 @@ $LOGO = @(
 $LOGO = @($LOGO | ForEach-Object { $_.Replace('@', [char]96) })
 $GRAD = @(55, 92, 93, 99, 105, 141)
 
+# ANSI writes are not atomic on a terminal, even inside one Console.Write.
+# Never emit background text OR erase-to-end-of-line across the popup's cells.
+function ANSI-Slice([string]$text, [int]$start, [int]$length) {
+  $result = New-Object System.Text.StringBuilder
+  $pos = 0; $end = $start + $length
+  foreach ($token in [regex]::Matches($text, ([string][char]27 + '\[[0-9;]*m|[^' + [char]27 + ']+'))) {
+    if ($pos -ge $end) { break }
+    if ($token.Value[0] -eq [char]27) { $null = $result.Append($token.Value) }
+    else {
+      # Slice plain runs in bulk, not one PowerShell iteration per character.
+      $from = [Math]::Max(0, $start - $pos)
+      $to = [Math]::Min($token.Length, $end - $pos)
+      if ($to -gt $from) { $null = $result.Append($token.Value.Substring($from, $to - $from)) }
+      $pos += $token.Length
+    }
+  }
+  return $result.ToString()
+}
+function Dashboard-Line([int]$row, [int]$left, [string]$text) {
+  $mask = $global:approvalOcclusion
+  if (-not $mask -or $row -lt $mask.top -or $row -gt $mask.bottom) {
+    Put (At $row $left); Put ($text + $EL)
+    return
+  }
+  # Replace EL with explicit spaces, and emit only the spans beside the modal.
+  # Keep its shadow protected as well; it must not blank the modal each frame.
+  $text += ' ' * [Math]::Max(0, $global:frameCols - $left - (VisLen $text))
+  $before = [Math]::Max(0, $mask.left - $left)
+  if ($before -gt 0) { Put (At $row $left); Put ($RST + (ANSI-Slice $text 0 $before) + $RST) }
+  $after = [Math]::Max($left, $mask.right + 1)
+  $remaining = $global:frameCols - $after
+  if ($remaining -gt 0) { Put (At $row $after); Put ($RST + (ANSI-Slice $text ($after - $left) $remaining) + $RST) }
+}
+
 function Banner($rowOff) {
   $hp = ([Math]::Floor($global:frame / 2)) % ($LOGO.Count + 5)
   for ($i = 0; $i -lt $LOGO.Count; $i++) {
     $col = $GRAD[$i]
     $d = $i - ($hp - 2)
     if ($d -eq 0) { $col = 183 } elseif ($d -eq 1 -or $d -eq -1) { $col = 141 }
-    Put (At ($rowOff + $i) 5)
-    Put ((Col $col) + $LOGO[$i] + $RST)
-    if ($i -eq 1) { Put ((Col 240) + '   auto-run agent' + $RST) }
-    if ($i -eq 2) { Put ((Col 15) + '   ' + $instance + $RST) }
-    Put $EL
+    $line = (Col $col) + $LOGO[$i] + $RST
+    if ($i -eq 1) { $line += (Col 240) + '   auto-run agent' + $RST }
+    if ($i -eq 2) { $line += (Col 15) + '   ' + $instance + $RST }
+    Dashboard-Line ($rowOff + $i) 5 $line
   }
 }
 
@@ -1150,26 +1185,23 @@ function BoxTop($row, $spc, $bcol) {
   $W = Width
   $seg = 2 + 3 + 9 + 10
   $dash = $W - $seg - 1; if ($dash -lt 0) { $dash = 0 }
-  Put (At $row 4)
-  Put ((Col $bcol) + ([char]0x256D) + ([char]0x2500) + (Col 141) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col $bcol) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST + $EL)
+  Dashboard-Line $row 4 ((Col $bcol) + ([char]0x256D) + ([char]0x2500) + (Col 141) + ' ' + $spc + ' ' + (Col 15) + $instance + (Col 240) + ' auto-run ' + (Col $bcol) + (([string][char]0x2500) * $dash) + ([char]0x256E) + $RST)
 }
 function BoxRule($row, $bcol) {
   $W = Width
-  Put (At $row 4)
-  Put ((Col $bcol) + ([char]0x251C) + (([string][char]0x2500) * ($W - 2)) + ([char]0x2524) + $RST + $EL)
+  Dashboard-Line $row 4 ((Col $bcol) + ([char]0x251C) + (([string][char]0x2500) * ($W - 2)) + ([char]0x2524) + $RST)
 }
 function BoxBot($row, $bcol) {
   $W = Width
-  Put (At $row 4)
-  Put ((Col $bcol) + ([char]0x2570) + (([string][char]0x2500) * ($W - 2)) + ([char]0x256F) + $RST + $EL)
+  Dashboard-Line $row 4 ((Col $bcol) + ([char]0x2570) + (([string][char]0x2500) * ($W - 2)) + ([char]0x256F) + $RST)
 }
 function BoxRow($row, $label, $value, $vcol, $bcol) {
   $W = Width
   $v = Clamp $value ($W - 12)
-  Put (At $row 4)
-  Put ((Col $bcol) + ([char]0x2502) + $RST + ' ' + (Col 244) + ('{0,-9}' -f $label) + $RST + (Col $vcol) + $v + $RST)
+  $line = (Col $bcol) + ([char]0x2502) + $RST + ' ' + (Col 244) + ('{0,-9}' -f $label) + $RST + (Col $vcol) + $v + $RST
   $pad = $W - 12 - (VisLen $v); if ($pad -lt 0) { $pad = 0 }
-  Put ((' ' * $pad) + (Col $bcol) + ([char]0x2502) + $RST + $EL)
+  $line += (' ' * $pad) + (Col $bcol) + ([char]0x2502) + $RST
+  Dashboard-Line $row 4 $line
 }
 
 # Knight-rider loader with a soft trailing gradient.
@@ -1220,9 +1252,12 @@ function Draw {
   try {
   if ($global:approvalNeedsClear) { Put ($E + '[2J'); $global:approvalNeedsClear = $false }
   $sz = Console-Size
+  $global:frameCols = $sz.cols
+  $global:approvalOcclusion = $null
   if ($global:approvalVisible) {
     $sizeKey = [string]$sz.cols + ':' + [string]$sz.rows
-    if ($sizeKey -ne $global:approvalScreenSize) { Put ($E + '[2J'); $global:approvalScreenSize = $sizeKey }
+    if ($global:approvalScreenSize -and $sizeKey -ne $global:approvalScreenSize) { Put ($E + '[2J') }
+    $global:approvalScreenSize = $sizeKey
   }
   $global:frame++
   $dot = $SP[$global:spin % $SP.Count]; $global:spin++
@@ -1233,6 +1268,7 @@ function Draw {
     Draw-Approval $sz
     return
   }
+  if ($global:approvalVisible) { $global:approvalOcclusion = Approval-Rect $sz }
   $st = StatusText
   # One steady colour per state. An animated border reads as a flash, not as life.
   $bcol = 92; if ($state -eq 'paused') { $bcol = 98 } elseif ($state -eq 'stopped') { $bcol = 240 }
@@ -1288,8 +1324,8 @@ function Draw {
   }
   if ($global:approvalVisible) { Draw-Approval $sz }
   } finally {
-    # Compose the dashboard and its opaque popup before writing a single frame:
-    # never flash the underlying dashboard through the popup between redraws.
+    # Buffer to reduce output calls. Occlusion above, not this buffer, prevents
+    # paint-through when the terminal presents the individual ANSI operations.
     $frameText = $global:drawBuffer.ToString()
     $global:drawBuffer = $null
     [Console]::Write($frameText)
@@ -1519,9 +1555,16 @@ function Popup-Rule($row, $left, $width, [char]$first, [char]$last) {
   Put (At $row $left)
   Put ($E + '[48;5;234m' + (Col 214) + $first + (([string][char]0x2500) * ($width - 2)) + $last + $RST)
 }
-function Draw-Approval($sz) {
+function Approval-Rect($sz) {
   $width = [Math]::Min(82, $sz.cols - 16)
   $height = [Math]::Min(12, $sz.rows - 4)
+  $left = [int][Math]::Floor(($sz.cols - $width) / 2) + 1
+  $top = [Math]::Min(9, $sz.rows - $height - 1)
+  return @{ width = $width; height = $height; left = $left; top = $top; right = ($left + $width + 1); bottom = ($top + $height - 1) }
+}
+function Draw-Approval($sz) {
+  $rect = Approval-Rect $sz
+  $width = $rect.width; $height = $rect.height
   # Very tiny windows retain safe controls without drawing outside the viewport.
   if ($width -lt 24 -or $height -lt 8) {
     $global:approvalCanConfirm = $false
@@ -1529,8 +1572,7 @@ function Draw-Approval($sz) {
     return
   }
   $global:approvalCanConfirm = $true
-  $left = [int][Math]::Floor(($sz.cols - $width) / 2) + 1
-  $top = [Math]::Min(9, $sz.rows - $height - 1)
+  $left = $rect.left; $top = $rect.top
   $inner = $width - 4
   $count = $height - 7
   if ($inner -ne $global:approvalWrapWidth) {
@@ -1546,7 +1588,9 @@ function Draw-Approval($sz) {
   $global:approvalScroll = [Math]::Max(0, [Math]::Min($global:approvalScroll, $global:approvalMaxScroll))
   # A subtle offset shadow and an opaque surface: no screen-buffer switch.
   for ($i = 1; $i -lt $height; $i++) {
-    Put (At ($top + $i) ($left + 2)); Put ($E + '[48;5;232m' + (' ' * $width) + $RST)
+    # Only the exposed right edge is a shadow. Filling the whole offset box
+    # would erase the request text before repainting it, causing another flash.
+    Put (At ($top + $i) ($left + $width)); Put ($E + '[48;5;232m' + '  ' + $RST)
   }
   Popup-Rule $top $left $width ([char]0x256D) ([char]0x256E)
   $spinner = $SP[$global:spin % $SP.Count]

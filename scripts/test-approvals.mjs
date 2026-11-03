@@ -131,6 +131,38 @@ if (process.platform === 'win32') {
     assert.deepEqual(received, [{ method: 'POST', body: '{"approve":true}' }]);
     const frames = JSON.parse(readFileSync(framesPath, 'utf8').replace(/^\uFEFF/, ''));
     assert.ok(frames.length >= 8, 'real terminal render fixtures were captured');
+    // Check EVERY intermediate terminal write, not just the final screenshot.
+    // Writing the dashboard or a shadow through an opaque modal is visible in
+    // real terminals even when all ANSI operations share one Console.Write.
+    for (const frame of frames.filter(f => f.name !== 'cleared')) {
+      const width = Math.min(82, frame.cols - 16), height = Math.min(12, frame.rows - 4);
+      if (width < 24 || height < 8) continue;
+      const left = Math.floor((frame.cols - width) / 2) + 1, top = Math.min(9, frame.rows - height - 1);
+      let row = 1, col = 1, background = 0;
+      const inside = () => row >= top && row < top + height && col >= left && col < left + width;
+      for (const token of frame.ansi.matchAll(/\u001b\[([0-9;?]*)([A-Za-z])|([^\u001b]+)/g)) {
+        if (token[3]) {
+          for (const char of token[3]) {
+            assert.ok(row <= frame.rows && col <= frame.cols, `${frame.name}: output overflow`);
+            if (inside()) assert.ok([234, 40, 203].includes(background), `${frame.name}: paint-through at ${row},${col} (background ${background})`);
+            col++;
+          }
+        } else {
+          const values = token[1].split(';').map(Number), command = token[2];
+          if (command === 'H') { row = values[0] || 1; col = values[1] || 1; }
+          if (command === 'K' && row >= top && row < top + height) assert.ok(col >= left + width, `${frame.name}: erase-through on popup row ${row}`);
+          if (command === 'm') {
+            for (let i = 0; i < values.length; i++) {
+              if (values[i] === 0 || values[i] === 49) background = 0;
+              if ((values[i] === 38 || values[i] === 48) && values[i + 1] === 5) {
+                if (values[i] === 48) background = values[i + 2];
+                i += 2;
+              }
+            }
+          }
+        }
+      }
+    }
     console.log(result.output.trim());
     console.log(`Terminal render fixtures: ${framesPath}`);
   } finally { await new Promise(resolve => server.close(resolve)); }
