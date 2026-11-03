@@ -23,7 +23,7 @@ https://github.com/user-attachments/assets/3f86498e-153f-4896-9595-642c4e61ba40
    for the **arming code**; give it the one the assistant showed you.
 3. That is it. From then on the assistant runs the loop: post a command, it runs
    on the machine, the output comes back, repeat until the problem is solved. You
-   watch it happen on the page and approve anything risky.
+   watch it happen on the page or in the PowerShell console and approve anything risky.
 
 Nobody types commands by hand. The person at the machine pastes once and can walk
 away; you talk to your assistant in plain language.
@@ -51,10 +51,15 @@ If you would rather do it yourself, the manual steps are below.
 - **Every command posts with an intent.** Each step records what it does and why, so
   the session page reads as a chain of intentions and stays as a record you can read
   back afterward, not a wall of PowerShell.
-- **Risky commands wait for approval.** Anything that changes the machine, a service
-  restart, a delete, a registry write, is held until someone at the keyboard presses
-  **Approve**; read-only checks just run. Who approved, and when, is recorded. On a
-  test box you can turn approvals off per session so nothing waits.
+- **Risky commands wait for approval in both places.** Anything that changes the
+  machine, a service restart, a delete, a registry write, is held until someone
+  approves on the web panel or in the target PowerShell console. The console shows
+  the full command and its intent: press **A** to approve or **D** to deny, then
+  **Enter** to confirm (**Esc** cancels the selection). Decide in either place;
+  the first decision wins and clears the other prompt. Read-only checks still run.
+  Who approved, and when, is recorded. On a test box you can turn approvals off per
+  session so nothing waits. Existing agents must be pasted again after upgrading
+  to get console approvals; web approval still works with older agents.
 - **The agent is a plain script.** What runs on the target is the PowerShell you can
   read in this repo, not something fetched from elsewhere and executed.
 - **It is ephemeral.** Nothing persists across a reboot and there is no fleet-wide

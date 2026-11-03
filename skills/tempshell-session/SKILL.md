@@ -196,7 +196,8 @@ command looks exactly like a hung agent if you say nothing and just keep waiting
 The post response tells you which happened: `"approval":"pending"` means it is
 waiting on a human; `null` means it is already on its way. Nothing self-approves,
 including the owner's own machine: a held command runs only after someone presses
-Approve on the page, and the entry then records `approval_decided_by` and
+Approve on the page or chooses A then Enter in the target console, and the entry
+then records `approval_decided_by` (`console` for a terminal decision) and
 `approval_decided_at`, so a fast approval is a fast human, not a bypass. While it
 waits, the agent is deliberately idle, **not** stuck. If it is denied you get a normal reply
 with `status:"denied"` and `stderr:"Denied at the machine..."`, so you are never left

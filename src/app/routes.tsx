@@ -287,9 +287,15 @@ function decide(c: Context, approve: boolean) {
   if (!canAccess(c, session)) return c.redirect('/');
   const seq = Number(c.req.param('seq'));
   const who = currentUserId(c) === session.owner ? 'admin' : 'guest';
-  const entry = Number.isFinite(seq) ? store.decideCommand(session.id, seq, approve, who) : null;
+  recordDecision(session.id, seq, approve, who);
+  return c.redirect(`/s/${session.slug}`);
+}
+
+// Both surfaces share the atomic pending -> decided transition and denial result.
+function recordDecision(sessionId: string, seq: number, approve: boolean, who: string) {
+  const entry = Number.isSafeInteger(seq) && seq > 0 ? store.decideCommand(sessionId, seq, approve, who) : null;
   if (entry && !approve) {
-    store.addResult(session.id, {
+    store.addResult(sessionId, {
       stdout: '',
       stderr: 'Denied at the machine. The command was not run.',
       exitCode: null,
@@ -301,7 +307,7 @@ function decide(c: Context, approve: boolean) {
       errorsJson: null,
     });
   }
-  return c.redirect(`/s/${session.slug}`);
+  return entry;
 }
 
 app.post('/s/:slug/approve/:seq', (c) => decide(c, true));
@@ -537,7 +543,7 @@ api.post('/sessions/:slug/command', async (c) => {
       ...(held
         ? {
             risk_reason: reason,
-            held_note: `Held for approval: ${reason ?? 'flagged as risky'}. Someone at the machine must press Approve before it runs. Tell the user, do not re-post it.`,
+            held_note: `Held for approval: ${reason ?? 'flagged as risky'}. Someone at the machine must approve on the web panel or choose A then Enter in the target console before it runs. Tell the user, do not re-post it.`,
           }
         : {}),
       url: `${config.publicUrl}/s/${session.slug}`,
@@ -809,8 +815,21 @@ app.post('/x/:slug/arm', async (c) => {
   return c.json({ ok: true, token });
 });
 
-// Long-poll for the next command to run, or a stop signal. The command is
-// claimed on the server so it is served exactly once, and never inferred done.
+// Executor-only human decisions: never accept the assistant's API token here.
+app.post('/x/:slug/decision/:seq', async (c) => {
+  const session = store.getSession(c.req.param('slug'));
+  if (!session) return c.json({ error: 'not found' }, 404);
+  const ex = executorAuth(c, session);
+  if (!ex) return c.json({ error: 'unauthorised' }, 401);
+  if (ex.stop) return c.json({ error: 'agent stopped' }, 409);
+  const body = await safeJson<{ approve?: unknown }>(c);
+  if (typeof body?.approve !== 'boolean') return c.json({ error: 'approve must be a boolean' }, 400);
+  const entry = recordDecision(session.id, Number(c.req.param('seq')), body.approve, 'console');
+  if (!entry) return c.json({ error: 'no longer awaiting approval' }, 409);
+  return c.json({ ok: true, seq: entry.seq, approval: entry.approval });
+});
+
+// Long-poll for work; only approved commands can ever be claimed.
 app.get('/x/:slug/poll', async (c) => {
   const session = store.getSession(c.req.param('slug'));
   if (!session) return c.json({ error: 'not found' }, 404);
@@ -824,13 +843,19 @@ app.get('/x/:slug/poll', async (c) => {
   // Reboot persistence: hand over the re-arm token whenever one is armed, on
   // whichever response the poll returns.
   const rearm = store.pendingRearm(session.id);
+  // Capability opt-in: older pasted agents must never mistake a held command
+  // for runnable work. Keep serving independent read-only work as before.
+  const consoleApprovals = c.req.query('approvals') === '1';
+  let held = consoleApprovals ? store.pendingApprovals(session.id)[0] : undefined;
   let cmd = store.claimNextCommand(session.id);
-  while (!cmd && Date.now() < deadline) {
+  while (!cmd && !held && Date.now() < deadline) {
     if (store.getExecutor(session.id)?.stop) return c.json({ stop: true });
     await bus.wait(`session:${session.id}`, deadline - Date.now(), c.req.raw.signal);
     if (c.req.raw.signal.aborted) break;
     cmd = store.claimNextCommand(session.id);
+    held = consoleApprovals ? store.pendingApprovals(session.id)[0] : undefined;
   }
+  if (!cmd && held) return c.json({ awaiting_approval: held, ...(rearm ? { rearm_token: rearm } : {}) });
   if (!cmd) return c.json({ timed_out: true, ...(rearm ? { rearm_token: rearm } : {}) });
   return c.json({
     seq: cmd.seq,
@@ -1045,6 +1070,10 @@ $global:said = $false
 $global:inAlt = $false
 $global:armedOk = $false
 $global:flash = 0
+$global:approvalVisible = $false
+$global:heldApproval = $null
+$global:approvalSelection = ''
+$global:approvalKeyboard = $true
 
 # Visible length: box math must ignore ANSI colour codes, or a coloured value
 # counts hundreds of escape chars and blows past the column width.
@@ -1174,6 +1203,7 @@ function StatusText {
 
 $PT = 9
 function Draw {
+  if ($global:approvalVisible) { Read-ApprovalKey; return }
   if (-not $fancy) { return }
   $global:frame++
   $dot = $SP[$global:spin % $SP.Count]; $global:spin++
@@ -1392,6 +1422,63 @@ function Idle($ms) {
   while ((Get-Date) -lt $until) { Draw; Start-Sleep -Milliseconds 110 }
 }
 
+# Never block on Read-Host: web decisions and independent read-only work must
+# still flow. The capable poll refreshes the request; keys are read during redraw.
+# Use the normal buffer so the complete command can be scrolled, not truncated.
+function Approval-Text([string]$s) { return ($s -replace '[\x00-\x08\x0B-\x1F\x7F-\x9F]', '') }
+function Clear-Approval {
+  if (-not $global:approvalVisible) { return }
+  $global:approvalVisible = $false
+  $global:heldApproval = $null
+  $global:approvalSelection = ''
+  if ($fancy) { Put ($E + '[?1049h'); Put ($E + '[2J'); Put ($E + '[H'); Put ($E + '[?25l'); $global:inAlt = $true }
+}
+function Show-Approval($held) {
+  if ($global:heldApproval -and $global:heldApproval.seq -eq $held.seq) { return }
+  $global:heldApproval = $held
+  $global:approvalVisible = $true
+  $global:approvalSelection = ''
+  $global:approvalKeyboard = $true
+  if ($fancy -and $global:inAlt) {
+    Put ($E + '[?25h'); Put ($E + '[?1049l'); $global:inAlt = $false
+  }
+  Write-Host ''
+  Write-Host ('=== APPROVAL NEEDED - command #' + $held.seq + ' ===') -ForegroundColor Yellow
+  Write-Host (Approval-Text ([string]$held.intent)) -ForegroundColor White
+  if ($held.why) { Write-Host ('Why: ' + (Approval-Text ([string]$held.why))) }
+  Write-Host 'Full command:' -ForegroundColor Yellow
+  Write-Host (Approval-Text ([string]$held.body))
+  Write-Host ''
+  Write-Host 'A = Approve, D = Deny, then Enter to confirm. Or decide on the web.' -ForegroundColor Yellow
+  Write-Host 'This command stays held until approved. Ctrl+C stops the agent.'
+  # Discard keys typed before this request became visible. Enter alone is inert.
+  try { while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) } } catch {
+    $global:approvalKeyboard = $false
+    Write-Host 'Console input unavailable. Approve or deny on the web.' -ForegroundColor Yellow
+  }
+}
+function Read-ApprovalKey {
+  if (-not $global:approvalKeyboard -or -not $global:heldApproval) { return }
+  try {
+    if (-not [Console]::KeyAvailable) { return }
+    $key = [Console]::ReadKey($true)
+    if ($key.Key -eq [ConsoleKey]::A) { $global:approvalSelection = 'approve'; Write-Host 'Approve selected. Enter to confirm, Esc to cancel.' -ForegroundColor Yellow }
+    elseif ($key.Key -eq [ConsoleKey]::D) { $global:approvalSelection = 'deny'; Write-Host 'Deny selected. Enter to confirm, Esc to cancel.' -ForegroundColor Yellow }
+    elseif ($key.Key -eq [ConsoleKey]::Escape) { $global:approvalSelection = ''; Write-Host 'Selection cancelled.' }
+    elseif ($key.Key -eq [ConsoleKey]::Enter -and $global:approvalSelection) {
+      $decision = @{ approve = ($global:approvalSelection -eq 'approve') } | ConvertTo-Json
+      $global:approvalSelection = ''
+      try {
+        Invoke-RestMethod "$base/x/$slug/decision/$($global:heldApproval.seq)" -Method Post -Headers $hdr -ContentType 'application/json' -Body $decision -TimeoutSec 6 -ErrorAction Stop | Out-Null
+        Write-Host 'Decision recorded.' -ForegroundColor Cyan
+        Clear-Approval
+      } catch {
+        Write-Host 'Decision not confirmed. It may already have been decided on the web; retry only if still held.' -ForegroundColor Yellow
+      }
+    }
+  } catch { $global:approvalKeyboard = $false; Write-Host 'Console input unavailable. Approve or deny on the web.' -ForegroundColor Yellow }
+}
+
 # ---- arm (on a clean alternate screen when fancy) ----------------------------
 # ${rearm} is empty for a normal paste. When the agent is re-launched after a
 # reboot by its logon entry, the server bakes an executor token in here, so it
@@ -1427,9 +1514,11 @@ try {
   $running = $true
   while ($running) {
     # A long server-side wait is fine now that it no longer freezes the redraw.
-    $pr = Get-Async "$base/x/$slug/poll?timeout=20" $hdr 40
+    $pollSeconds = 20; if ($global:approvalVisible) { $pollSeconds = 1 }
+    $pr = Get-Async "$base/x/$slug/poll?timeout=$pollSeconds&approvals=1" $hdr 40
     if (-not $pr.ok) {
       if ($pr.code -eq 401) { $conn = 'ended'; break }
+      $global:approvalSelection = ''
       $conn = 'reconnecting'; if ($state -ne 'paused') { $state = 'waiting' }
       Idle 800
       continue
@@ -1449,6 +1538,7 @@ try {
     }
 
     if ($c.stop) {
+      Clear-Approval
       # Do not tear down: hold a revivable pause so the owner can pick this
       # session back up within the window. Poll ping (which claims nothing) to
       # learn the moment they resume; on timeout, sign off.
@@ -1464,6 +1554,9 @@ try {
       if ($revived) { $state = 'waiting'; $conn = 'connected'; $lastLine = 'revived'; $lastCol = 40; Draw; continue }
       break
     }
+
+    if ($c.awaiting_approval) { Show-Approval $c.awaiting_approval; Idle 1000; continue }
+    Clear-Approval
 
     if ($c.timed_out) { if ($state -ne 'waiting') { $state = 'waiting' }; Draw; continue }
 
