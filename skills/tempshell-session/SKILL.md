@@ -335,7 +335,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   "$BASE/api/sessions/$SLUG/complete"
 ```
 
-`/complete` only sets the task's outcome label; it does not disconnect the agent.
+`/complete` sets the task's outcome label, and it is effectively final: once a
+session is marked complete, its join link only says "task complete" and the agent
+cannot be armed into it again (there is no reopen endpoint). Follow-up work then needs
+a new session and a new paste. That is what happened on 2026-11-17, when a session was
+marked complete at the end of an install and the person could not rejoin for testing.
 Do not follow it with `/autorun/stop` unless the user also asked to disconnect.
 Marking a task complete, stopping its connection, and deleting its history are
 separate actions with separate user authorization.
