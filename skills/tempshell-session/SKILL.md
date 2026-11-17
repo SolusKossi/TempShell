@@ -84,7 +84,7 @@ bytes survive: `printf '%s' '{"title":"Arsoppgjor pa PCen"}' | curl ... --data-b
 
 ### 2. Read status, then turn on auto-run only when needed
 
-**Always read status first — especially after a reboot or a cut-off wait.** Do not
+**Always read status first â€” especially after a reboot or a cut-off wait.** Do not
 mint a replacement code blindly: re-arming an already armed agent discards its
 executor token and disconnects it.
 
