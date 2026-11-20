@@ -330,6 +330,21 @@ export function listSessions(owner: string, includeClosed = false): Session[] {
 export type SessionStatus = 'live' | 'arming' | 'inactive';
 const LIVE_WINDOW_MS = 45_000;
 
+/**
+ * Null while an agent is (or may still become) connected. Otherwise why it is
+ * not: it said goodbye (the window was closed), it was stopped, or it has gone
+ * silent (crashed, PC asleep, network gone). Waiting on such a session can only
+ * end in a timeout, so /wait returns at once with this instead.
+ */
+export function agentGone(s: Session): 'closed' | 'stopped' | 'silent' | null {
+  const ex = getExecutor(s.id);
+  if (!ex || !ex.armed) return null; // never connected yet: still arming
+  if (ex.stop) return ex.stopped_reason === 'agent_exit' ? 'closed' : 'stopped';
+  if (runningSince(s.id) != null) return null; // mid-command: it cannot poll
+  if (ex.last_seen && Date.now() - ex.last_seen > LIVE_WINDOW_MS) return 'silent';
+  return null;
+}
+
 export function sessionStatus(s: Session): SessionStatus {
   const ex = getExecutor(s.id);
   if (!s.auto_enabled) {
@@ -797,6 +812,7 @@ export function haltAuto(sessionId: string, reason = 'explicit_stop', by = 'owne
   db.prepare('UPDATE executors SET stop = 1, stopped_reason = ?, stopped_at = ?, stopped_by = ? WHERE session_id = ?')
     .run(reason, now, by, sessionId);
   bus.publish(`session:${sessionId}`);
+  bus.publish(`reply:${sessionId}`);
 }
 
 /**
@@ -922,6 +938,9 @@ export function redeemRearm(sessionId: string, token: string): string | null {
 export function executorBye(sessionId: string): void {
   db.prepare("UPDATE executors SET stop = 1, stopped_reason = 'agent_exit', stopped_at = ?, stopped_by = 'agent' WHERE session_id = ?").run(Date.now(), sessionId);
   bus.publish('sessions');
+  // Wake anyone blocked on /wait: there is no agent left to answer them.
+  bus.publish(`reply:${sessionId}`);
+  bus.publish(`session:${sessionId}`);
 }
 
 const CLAIM_TTL_MS = 90_000;

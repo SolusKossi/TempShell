@@ -97,6 +97,26 @@ const followup = store.addEntry(s.id, 'claude', 'command', 'Get-Date', 'powershe
 assert.equal((await poll()).seq, followup.seq, 'same executor token accepts follow-up work after completion');
 store.markCommandDone(s.id, followup.seq);
 
+// A wait must never outlive the agent: closing the window ends it at once.
+const api = (path, options = {}) => app.request(`/api/sessions${path}`, { ...options, headers: { Authorization: 'Bearer assistant-token', ...(options.headers || {}) } });
+const gs = store.createSession('Gone test', 'owner');
+store.armExecutor(gs.id, store.enableAuto(gs.id));
+const goneSeq = (await (await api(`/${gs.slug}/command`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'Get-Date' })).json()).seq;
+const waitStarted = Date.now();
+const goneWait = api(`/${gs.slug}/wait?since=${goneSeq}&timeout=60`);
+await new Promise(resolve => setTimeout(resolve, 50));
+store.executorBye(gs.id);
+const goneReply = await (await goneWait).json();
+assert.equal(goneReply.agent_gone, 'closed', 'a closed agent ends the wait');
+assert.equal(goneReply.timed_out, false);
+assert.ok(Date.now() - waitStarted < 5000, 'the wait returns promptly, not at its timeout');
+assert.equal((await (await api(`/${gs.slug}/wait?since=${goneSeq}&timeout=60`)).json()).agent_gone, 'closed', 'already gone: immediate');
+assert.equal((await (await api(`/${gs.slug}/command`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'Get-Date' })).json()).agent_gone, 'closed', 'posting says so too');
+// Before the agent has connected, waiting is still allowed.
+const early = store.createSession('Not yet armed', 'owner');
+store.enableAuto(early.id);
+assert.equal(store.agentGone(early), null);
+
 // Validate the actual generated script with the Windows PowerShell 5.1 parser.
 const agentResponse = await app.request(`/x/${s.slug}/agent.ps1`, { headers: { cookie } });
 assert.equal(agentResponse.status, 200);

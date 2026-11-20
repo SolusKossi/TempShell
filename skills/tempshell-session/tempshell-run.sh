@@ -188,7 +188,7 @@ END=$(( $(date +%s) + 1800 ))
 while [ "$(date +%s)" -lt "$END" ]; do
   R="$(curl -s --max-time 315 -H "Authorization: Bearer $TOKEN" \
       "$BASE/api/sessions/$SLUG/wait?since=$SINCE&timeout=300&compact=1" || true)"
-  [ -z "$R" ] && continue
+  [ -z "$R" ] && { sleep 2; continue; }
 
   if [ "$have_node" = 1 ]; then
     DECISION="$(printf '%s' "$R" | SINCE="$SINCE" CMDSEQ="$SEQ" node -e '
@@ -205,9 +205,12 @@ while [ "$(date +%s)" -lt "$END" ]; do
         const ans = ents.find(e =>
           (e.author === "auto" && e.result && e.in_reply_to === cmdSeq) ||
           ((e.author === "guest" || e.author === "admin") && e.kind !== "file" && e.kind !== "note"));
+        // The agent left (window closed, stopped, or silent): nothing will answer.
+        if (!ans && j.agent_gone) { console.log("GONE " + JSON.stringify({ agent_gone: j.agent_gone, posted_seq: cmdSeq, note: j.note })); return; }
         console.log(ans ? ("MATCH " + JSON.stringify(ans)) : ("RETRY " + maxseq));
       });' 2>/dev/null || true)"
     if [ -z "$DECISION" ]; then continue; fi
+    if [ "${DECISION%% *}" = "GONE" ]; then printf '%s\n' "${DECISION#* }"; exit 3; fi
     if [ "${DECISION%% *}" = "MATCH" ]; then
       if [ "$QUIET" = 1 ]; then
         # Just the parts you actually read: status, then each stream if non-empty.
@@ -243,6 +246,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   else
     # No node: coarse fallback, take an auto result, else keep waiting.
     if printf '%s' "$R" | grep -q '"author":"auto"'; then printf '%s\n' "$R"; exit 0; fi
+    if printf '%s' "$R" | grep -q '"agent_gone"'; then printf '%s\n' "$R"; exit 3; fi
   fi
 done
 printf '{"timed_out":true,"gave_up":true,"posted_seq":%s}\n' "$SEQ"

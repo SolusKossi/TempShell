@@ -230,6 +230,23 @@ waits, the agent is deliberately idle, **not** stuck. If it is denied you get a 
 with `status:"denied"` and `stderr:"Denied at the machine..."`, so you are never left
 hanging: acknowledge it, don't re-post the same command, and ask what to do instead.
 
+**When the agent goes away, stop waiting and tell the user.** If the person closes
+the agent (console or app), the session is stopped, or the agent goes silent for 45
+seconds (crash, sleep, network), `/wait` returns at once with
+`"agent_gone": "closed" | "stopped" | "silent"` and a `note`, and a post to such a
+session carries `agent_gone` in its response. `tempshell-run.sh` / `.ps1` print
+`{"agent_gone": ..., "posted_seq": N, "note": ...}` and exit with code **3**. On exit 3
+or any `agent_gone`: do not retry, re-post, re-arm or keep waiting. End the wait and
+tell the user in plain words that the agent on the machine was closed or lost and
+what did not run, then ask whether they want to reconnect. A post that already
+reports `agent_gone` will never run; say so instead of waiting on it.
+(2026-11-20: the person closed the window mid-demo and the assistant sat in a wait
+until its own tool timeout, ignoring the user's messages for ten minutes.)
+
+**Never let a single wait run longer than about 5 minutes without surfacing.** Keep
+each call short (the helpers wait in 5-minute rounds; don't wrap them in longer loops
+of your own), so a new message from the user is never stuck behind a wait.
+
 **Turning off approvals (only when the user says so).** For a throwaway or test box
 where the approval step is just friction, the user can have you disable the gate, so
 risky commands run without waiting:

@@ -23,7 +23,7 @@ $since = $seq
 $end = (Get-Date).AddMinutes(30)
 while ((Get-Date) -lt $end) {
   $waitUrl = ('{0}/api/sessions/{1}/wait?since={2}&timeout=300&compact=1' -f $Base, $Slug, $since)
-  try { $reply = Invoke-RestMethod -Uri $waitUrl -Headers $headers -TimeoutSec 315 } catch { continue }
+  try { $reply = Invoke-RestMethod -Uri $waitUrl -Headers $headers -TimeoutSec 315 } catch { Start-Sleep -Seconds 2; continue }
   foreach ($entry in @($reply.entries)) {
     if ($entry.seq -gt $since) { $since = $entry.seq }
     $isAutoReply = $entry.author -eq 'auto' -and $entry.result -and $entry.in_reply_to -eq $seq
@@ -46,6 +46,11 @@ while ((Get-Date) -lt $end) {
       }
     } else { $entry | ConvertTo-Json -Compress -Depth 10 }
     return
+  }
+  # The agent left (window closed, stopped, or silent): nothing will answer.
+  if ($reply.agent_gone) {
+    [pscustomobject]@{ agent_gone = $reply.agent_gone; posted_seq = $seq; note = $reply.note } | ConvertTo-Json -Compress
+    exit 3
   }
 }
 [pscustomobject]@{ timed_out = $true; gave_up = $true; posted_seq = $seq } | ConvertTo-Json -Compress

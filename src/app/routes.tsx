@@ -547,6 +547,9 @@ api.post('/sessions/:slug/command', async (c) => {
           }
         : {}),
       url: `${config.publicUrl}/s/${session.slug}`,
+      ...(store.agentGone(session)
+        ? { agent_gone: store.agentGone(session), agent_note: 'No agent is connected to run this. Tell the user instead of waiting for a result.' }
+        : {}),
     },
     201,
   );
@@ -566,19 +569,36 @@ api.get('/sessions/:slug/wait', async (c) => {
 
   const replies = () => store.listEntries(session.id, since).filter((e) => e.author !== 'claude');
 
+  // Never wait on an agent that is not there: a closed window, a stop or a
+  // silent agent ends the wait at once, so the caller can tell the user instead
+  // of blocking until the timeout. Re-checked every 15 s for a silent agent,
+  // which sends no goodbye.
   let found = replies();
-  while (found.length === 0 && Date.now() < deadline) {
-    const remaining = deadline - Date.now();
+  let gone = found.length === 0 ? store.agentGone(session) : null;
+  while (found.length === 0 && !gone && Date.now() < deadline) {
+    const remaining = Math.min(deadline - Date.now(), 15_000);
     await bus.wait(`reply:${session.id}`, remaining, c.req.raw.signal);
     if (c.req.raw.signal.aborted) break;
     found = replies();
+    if (found.length === 0) gone = store.agentGone(session);
   }
 
   const compact = c.req.query('compact') === '1' || c.req.query('fields') === 'result';
   return c.json({
-    timed_out: found.length === 0,
+    timed_out: found.length === 0 && !gone,
     seq: store.latestSeq(session.id),
     entries: found.map((e) => toApiEntry(e, compact)),
+    ...(gone
+      ? {
+          agent_gone: gone,
+          note:
+            gone === 'closed'
+              ? 'The agent on the target machine was closed, so nothing will answer. Stop waiting and tell the user; a new session or a re-paste is needed to continue.'
+              : gone === 'stopped'
+                ? 'This session was stopped, so nothing will answer. Stop waiting and tell the user.'
+                : 'The agent has not been heard from for over 45 seconds (closed, crashed, asleep or offline). Stop waiting and tell the user.',
+        }
+      : {}),
   });
 });
 
