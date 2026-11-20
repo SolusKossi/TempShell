@@ -12,3 +12,5 @@ data/
 *.db
 *.db-wal
 *.db-shm
+# Images drawn by vaib's generate_image.
+generated-images/
